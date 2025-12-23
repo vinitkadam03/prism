@@ -363,6 +363,12 @@ class Stream
 
         // skip calling llm if there are pending deferred tools
         if ($hasDeferred) {
+            $this->state->markStepFinished();
+            yield new StepFinishEvent(
+                id: EventID::generate(),
+                timestamp: time()
+            );
+
             yield new StreamEndEvent(
                 id: EventID::generate(),
                 timestamp: time(),
