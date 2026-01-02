@@ -77,13 +77,14 @@ class Text
             throw new PrismException('XAI: finish reason is tool_calls but no tool calls found in response');
         }
 
-        $toolResults = $this->callTools($request->tools(), $toolCalls);
+        $hasPendingToolCalls = false;
+        $toolResults = $this->callTools($request->tools(), $toolCalls, $hasPendingToolCalls);
 
         $request->addMessage(new ToolResultMessage($toolResults));
 
         $this->addStep($data, $request, $toolResults);
 
-        if ($this->shouldContinue($request)) {
+        if (! $hasPendingToolCalls && $this->shouldContinue($request)) {
             return $this->handle($request);
         }
 
