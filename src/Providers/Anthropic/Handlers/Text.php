@@ -101,7 +101,8 @@ class Text
 
     protected function handleToolCalls(): Response
     {
-        $toolResults = $this->callTools($this->request->tools(), $this->tempResponse->toolCalls);
+        $hasDeferredTools = false;
+        $toolResults = $this->callTools($this->request->tools(), $this->tempResponse->toolCalls, $hasDeferredTools);
         $message = new ToolResultMessage($toolResults);
 
         // Apply tool result caching if configured
@@ -113,7 +114,7 @@ class Text
 
         $this->addStep($toolResults);
 
-        if ($this->responseBuilder->steps->count() < $this->request->maxSteps()) {
+        if (! $hasDeferredTools && $this->responseBuilder->steps->count() < $this->request->maxSteps()) {
             return $this->handle();
         }
 

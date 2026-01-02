@@ -88,19 +88,21 @@ class Text
      */
     protected function handleToolCalls(array $data, Request $request, ClientResponse $clientResponse): Response
     {
+        $hasDeferredTools = false;
         $toolResults = $this->callTools(
             $request->tools(),
             ToolCallMap::map(array_filter(
                 data_get($data, 'output', []),
                 fn (array $output): bool => $output['type'] === 'function_call')
             ),
+            $hasDeferredTools,
         );
 
         $request->addMessage(new ToolResultMessage($toolResults));
 
         $this->addStep($data, $request, $clientResponse, $toolResults);
 
-        if ($this->shouldContinue($request)) {
+        if (! $hasDeferredTools && $this->shouldContinue($request)) {
             return $this->handle($request);
         }
 
