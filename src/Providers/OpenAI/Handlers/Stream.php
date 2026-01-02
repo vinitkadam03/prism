@@ -107,6 +107,16 @@ class Stream
 
                 $this->state->markStreamStarted();
 
+                // Emit step start after stream start
+                if ($this->state->shouldEmitStepStart()) {
+                    $this->state->markStepStarted();
+
+                    yield new StepStartEvent(
+                        id: EventID::generate(),
+                        timestamp: time()
+                    );
+                }
+
                 continue;
             }
 
@@ -389,7 +399,15 @@ class Stream
     {
         $mappedToolCalls = $this->mapToolCalls($this->state->toolCalls());
         $toolResults = [];
-        yield from $this->callToolsAndYieldEvents($request->tools(), $mappedToolCalls, $this->state->messageId(), $toolResults);
+        $hasPendingToolCalls = false;
+        yield from $this->callToolsAndYieldEvents($request->tools(), $mappedToolCalls, $this->state->messageId(), $toolResults, $hasPendingToolCalls);
+
+        if ($hasPendingToolCalls) {
+            $this->state->markStepFinished();
+            yield from $this->yieldToolCallsFinishEvents();
+
+            return;
+        }
 
         $request->addMessage(new AssistantMessage($this->state->currentText(), $mappedToolCalls));
         $request->addMessage(new ToolResultMessage($toolResults));
