@@ -6,6 +6,8 @@ namespace Prism\Prism\Concerns;
 
 use Generator;
 use Illuminate\Support\Facades\Concurrency;
+use Illuminate\Support\Facades\Context;
+use Illuminate\Support\Facades\Event;
 use Illuminate\Support\ItemNotFoundException;
 use Illuminate\Support\MultipleItemsFoundException;
 use JsonException;
@@ -17,6 +19,9 @@ use Prism\Prism\Streaming\Events\StepFinishEvent;
 use Prism\Prism\Streaming\Events\StreamEndEvent;
 use Prism\Prism\Streaming\Events\ToolResultEvent;
 use Prism\Prism\Streaming\StreamState;
+use Prism\Prism\Telemetry\Events\SpanException;
+use Prism\Prism\Telemetry\Events\ToolCallCompleted;
+use Prism\Prism\Telemetry\Events\ToolCallStarted;
 use Prism\Prism\Tool;
 use Prism\Prism\ValueObjects\ToolCall;
 use Prism\Prism\ValueObjects\ToolOutput;
@@ -55,11 +60,9 @@ trait CallsTools
      */
     protected function callToolsAndYieldEvents(array $tools, array $toolCalls, string $messageId, array &$toolResults, bool &$hasPendingToolCalls): Generator
     {
-        $serverToolCalls = $this->filterServerExecutedToolCalls($tools, $toolCalls, $hasPendingToolCalls);
+        $resolvedCalls = $this->resolveToolCalls($tools, $toolCalls, $hasPendingToolCalls);
 
-        $groupedToolCalls = $this->groupToolCallsByConcurrency($tools, $serverToolCalls);
-
-        $executionResults = $this->executeToolsWithConcurrency($tools, $groupedToolCalls, $messageId);
+        $executionResults = $this->executeToolCalls($resolvedCalls, $messageId);
 
         foreach (collect($executionResults)->keys()->sort() as $index) {
             $result = $executionResults[$index];
@@ -73,42 +76,17 @@ trait CallsTools
     }
 
     /**
-     * Filter out client-executed tool calls, setting the pending flag if any are found.
+     * Resolve tool calls to Tool+ToolCall pairs, filtering client-executed tools
+     * and grouping by concurrency. Each tool is resolved exactly once.
+     *
+     * Unresolvable tools (not found, duplicates) are stored with the caught
+     * exception so executeSingleToolCall can produce a proper error result.
      *
      * @param  Tool[]  $tools
      * @param  ToolCall[]  $toolCalls
-     * @return array<int, ToolCall> Server-executed tool calls with original indices preserved
+     * @return array{concurrent: array<int, array{tool: Tool, toolCall: ToolCall}>, sequential: array<int, array{tool: ?Tool, toolCall: ToolCall, error?: PrismException}>}
      */
-    protected function filterServerExecutedToolCalls(array $tools, array $toolCalls, bool &$hasPendingToolCalls): array
-    {
-        $serverToolCalls = [];
-
-        foreach ($toolCalls as $index => $toolCall) {
-            try {
-                $tool = $this->resolveTool($toolCall->name, $tools);
-
-                if ($tool->isClientExecuted()) {
-                    $hasPendingToolCalls = true;
-
-                    continue;
-                }
-
-                $serverToolCalls[$index] = $toolCall;
-            } catch (PrismException) {
-                // Unknown tool - keep it so error handling works in executeToolCall
-                $serverToolCalls[$index] = $toolCall;
-            }
-        }
-
-        return $serverToolCalls;
-    }
-
-    /**
-     * @param  Tool[]  $tools
-     * @param  array<int, ToolCall>  $toolCalls
-     * @return array{concurrent: array<int, ToolCall>, sequential: array<int, ToolCall>}
-     */
-    protected function groupToolCallsByConcurrency(array $tools, array $toolCalls): array
+    protected function resolveToolCalls(array $tools, array $toolCalls, bool &$hasPendingToolCalls): array
     {
         $concurrent = [];
         $sequential = [];
@@ -116,14 +94,24 @@ trait CallsTools
         foreach ($toolCalls as $index => $toolCall) {
             try {
                 $tool = $this->resolveTool($toolCall->name, $tools);
+            } catch (PrismException $e) {
+                $sequential[$index] = ['tool' => null, 'toolCall' => $toolCall, 'error' => $e];
 
-                if ($tool->isConcurrent()) {
-                    $concurrent[$index] = $toolCall;
-                } else {
-                    $sequential[$index] = $toolCall;
-                }
-            } catch (PrismException) {
-                $sequential[$index] = $toolCall;
+                continue;
+            }
+
+            if ($tool->isClientExecuted()) {
+                $hasPendingToolCalls = true;
+
+                continue;
+            }
+
+            $pair = ['tool' => $tool, 'toolCall' => $toolCall];
+
+            if ($tool->isConcurrent()) {
+                $concurrent[$index] = $pair;
+            } else {
+                $sequential[$index] = $pair;
             }
         }
 
@@ -134,43 +122,111 @@ trait CallsTools
     }
 
     /**
-     * @param  Tool[]  $tools
-     * @param  array{concurrent: array<int, ToolCall>, sequential: array<int, ToolCall>}  $groupedToolCalls
+     * @param  array{concurrent: array<int, array{tool: Tool, toolCall: ToolCall}>, sequential: array<int, array{tool: ?Tool, toolCall: ToolCall, error?: PrismException}>}  $resolvedCalls
      * @return array<int, array{toolResult: ToolResult, events: array<int, ToolResultEvent|ArtifactEvent>}>
      */
-    protected function executeToolsWithConcurrency(array $tools, array $groupedToolCalls, string $messageId): array
+    protected function executeToolCalls(array $resolvedCalls, string $messageId): array
     {
         $results = [];
 
-        $concurrentClosures = [];
+        if ($resolvedCalls['concurrent'] !== []) {
+            $closures = [];
+            foreach ($resolvedCalls['concurrent'] as $index => $pair) {
+                $closures[$index] = static fn (): array => self::executeResolvedToolCall($pair['tool'], $pair['toolCall'], $messageId);
+            }
 
-        foreach ($groupedToolCalls['concurrent'] as $index => $toolCall) {
-            $concurrentClosures[$index] = fn () => $this->executeToolCall($tools, $toolCall, $messageId);
-        }
-
-        if ($concurrentClosures !== []) {
-            foreach (Concurrency::run($concurrentClosures) as $index => $result) {
+            foreach (Concurrency::run($closures) as $index => $result) {
                 $results[$index] = $result;
             }
         }
 
-        foreach ($groupedToolCalls['sequential'] as $index => $toolCall) {
-            $results[$index] = $this->executeToolCall($tools, $toolCall, $messageId);
+        foreach ($resolvedCalls['sequential'] as $index => $pair) {
+            $results[$index] = self::executeResolvedToolCall($pair['tool'], $pair['toolCall'], $messageId, $pair['error'] ?? null);
         }
+
+        $this->emitToolCallTelemetry($resolvedCalls, $results);
 
         return $results;
     }
 
     /**
-     * @param  Tool[]  $tools
-     * @return array{toolResult: ToolResult, events: array<int, ToolResultEvent|ArtifactEvent>}
+     * Emit telemetry spans for all executed tool calls uniformly.
+     *
+     * Uses captured startNanos/endNanos from inside each closure for accurate
+     * per-tool timing, even for concurrent executions where the actual work
+     * happens in separate processes.
+     *
+     * @param  array{concurrent: array<int, array{tool: Tool, toolCall: ToolCall}>, sequential: array<int, array{tool: ?Tool, toolCall: ToolCall, error?: PrismException}>}  $resolvedCalls
+     * @param  array<int, array{toolResult: ToolResult, startNanos: int, endNanos: int, events: array<int, ToolResultEvent|ArtifactEvent>}>  $results
      */
-    protected function executeToolCall(array $tools, ToolCall $toolCall, string $messageId): array
+    protected function emitToolCallTelemetry(array $resolvedCalls, array $results): void
     {
+        if (! config('prism.telemetry.enabled', false)) {
+            return;
+        }
+
+        $traceId = Context::getHidden('prism.telemetry.trace_id') ?? bin2hex(random_bytes(16));
+        $parentSpanId = Context::getHidden('prism.telemetry.current_span_id');
+
+        Context::addHidden('prism.telemetry.trace_id', $traceId);
+
+        $allCalls = $resolvedCalls['concurrent'] + $resolvedCalls['sequential'];
+
+        foreach ($allCalls as $index => $pair) {
+            if (! isset($results[$index])) {
+                continue;
+            }
+
+            $result = $results[$index];
+            $toolCall = $pair['toolCall'];
+            $spanId = bin2hex(random_bytes(8));
+
+            try {
+                Event::dispatch(new ToolCallStarted(
+                    spanId: $spanId,
+                    traceId: $traceId,
+                    parentSpanId: $parentSpanId,
+                    toolCall: $toolCall,
+                    timeNanos: $result['startNanos'],
+                ));
+
+                Event::dispatch(new ToolCallCompleted(
+                    spanId: $spanId,
+                    traceId: $traceId,
+                    parentSpanId: $parentSpanId,
+                    toolCall: $toolCall,
+                    toolResult: $result['toolResult'],
+                    timeNanos: $result['endNanos'],
+                ));
+            } catch (\Throwable $e) {
+                Event::dispatch(new SpanException($spanId, $e));
+            }
+        }
+    }
+
+    /**
+     * Execute a tool call without capturing $this — safe for serialization
+     * by Laravel's ProcessDriver which uses SerializableClosure.
+     *
+     * When $error is provided (tool resolution failed), skips execution and
+     * returns a failed result directly.
+     *
+     * @return array{toolResult: ToolResult, startNanos: int, endNanos: int, events: array<int, ToolResultEvent|ArtifactEvent>}
+     */
+    protected static function executeResolvedToolCall(?Tool $tool, ToolCall $toolCall, string $messageId, ?PrismException $error = null): array
+    {
+        $startNanos = now_nanos();
         $events = [];
 
         try {
-            $tool = $this->resolveTool($toolCall->name, $tools);
+            if ($error instanceof PrismException) {
+                throw $error;
+            }
+
+            if (! $tool instanceof Tool) {
+                throw new PrismException("Tool [{$toolCall->name}] could not be resolved");
+            }
+
             $output = call_user_func_array(
                 $tool->handle(...),
                 $toolCall->arguments()
@@ -210,6 +266,8 @@ trait CallsTools
 
             return [
                 'toolResult' => $toolResult,
+                'startNanos' => $startNanos,
+                'endNanos' => now_nanos(),
                 'events' => $events,
             ];
         } catch (PrismException $e) {
@@ -233,6 +291,8 @@ trait CallsTools
             return [
                 'toolResult' => $toolResult,
                 'events' => $events,
+                'startNanos' => $startNanos,
+                'endNanos' => now_nanos(),
             ];
         }
     }

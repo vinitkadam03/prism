@@ -283,7 +283,16 @@ class Tool
         }
 
         try {
-            $value = call_user_func($this->fn, ...$args);
+            // After ProcessDriver deserialization, $fn may become a
+            // SerializableClosure\Serializers\Native whose __invoke doesn't
+            // forward PHP 8 named arguments. Unwrap via getClosure() to
+            // recover the real Closure so named-arg spreading works.
+            $fn = $this->fn;
+            $callable = is_object($fn) && method_exists($fn, 'getClosure')
+                ? $fn->getClosure()
+                : $fn;
+
+            $value = call_user_func($callable, ...$args);
 
             if (is_string($value)) {
                 return $value;

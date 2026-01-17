@@ -13,16 +13,28 @@ use Prism\Prism\Concerns\ConfiguresGeneration;
 use Prism\Prism\Concerns\ConfiguresModels;
 use Prism\Prism\Concerns\ConfiguresProviders;
 use Prism\Prism\Concerns\ConfiguresTools;
+use Prism\Prism\Concerns\EmitsTelemetry;
 use Prism\Prism\Concerns\HasMessages;
 use Prism\Prism\Concerns\HasPrompts;
 use Prism\Prism\Concerns\HasProviderOptions;
 use Prism\Prism\Concerns\HasProviderTools;
+use Prism\Prism\Concerns\HasTelemetryContext;
 use Prism\Prism\Concerns\HasTools;
 use Prism\Prism\Exceptions\PrismException;
 use Prism\Prism\Streaming\Adapters\BroadcastAdapter;
 use Prism\Prism\Streaming\Adapters\DataProtocolAdapter;
 use Prism\Prism\Streaming\Adapters\SSEAdapter;
+use Prism\Prism\Streaming\Events\StepFinishEvent;
+use Prism\Prism\Streaming\Events\StepStartEvent;
+use Prism\Prism\Streaming\Events\StreamEndEvent;
 use Prism\Prism\Streaming\Events\StreamEvent;
+use Prism\Prism\Streaming\Events\StreamStartEvent;
+use Prism\Prism\Telemetry\Events\StreamingCompleted;
+use Prism\Prism\Telemetry\Events\StreamingStarted;
+use Prism\Prism\Telemetry\Events\StreamStepCompleted;
+use Prism\Prism\Telemetry\Events\StreamStepStarted;
+use Prism\Prism\Telemetry\Events\TextGenerationCompleted;
+use Prism\Prism\Telemetry\Events\TextGenerationStarted;
 use Prism\Prism\Tool;
 use Prism\Prism\ValueObjects\Messages\UserMessage;
 use Symfony\Component\HttpFoundation\StreamedResponse;
@@ -34,10 +46,12 @@ class PendingRequest
     use ConfiguresModels;
     use ConfiguresProviders;
     use ConfiguresTools;
+    use EmitsTelemetry;
     use HasMessages;
     use HasPrompts;
     use HasProviderOptions;
     use HasProviderTools;
+    use HasTelemetryContext;
     use HasTools;
 
     /**
@@ -58,13 +72,30 @@ class PendingRequest
         $request = $this->toRequest();
 
         try {
-            $response = $this->provider->text($request);
+            return $this->withTelemetry(
+                startEventFactory: fn (string $spanId, string $traceId, ?string $parentSpanId): TextGenerationStarted => new TextGenerationStarted(
+                    spanId: $spanId,
+                    traceId: $traceId,
+                    parentSpanId: $parentSpanId,
+                    request: $request,
+                ),
+                endEventFactory: fn (string $spanId, string $traceId, ?string $parentSpanId, Response $response): TextGenerationCompleted => new TextGenerationCompleted(
+                    spanId: $spanId,
+                    traceId: $traceId,
+                    parentSpanId: $parentSpanId,
+                    request: $request,
+                    response: $response,
+                ),
+                execute: function () use ($request, $callback): Response {
+                    $response = $this->provider->text($request);
 
-            if ($callback !== null) {
-                $callback($this, $response);
-            }
+                    if ($callback !== null) {
+                        $callback($this, $response);
+                    }
 
-            return $response;
+                    return $response;
+                },
+            );
         } catch (RequestException $e) {
             $this->provider->handleRequestException($request->model(), $e);
         }
@@ -78,7 +109,45 @@ class PendingRequest
         $request = $this->toRequest();
 
         try {
-            yield from $this->provider->stream($request);
+            yield from $this->withStreamingTelemetry(
+                startEventFactory: fn (string $spanId, string $traceId, ?string $parentSpanId, StreamStartEvent $streamStart): StreamingStarted => new StreamingStarted(
+                    spanId: $spanId,
+                    traceId: $traceId,
+                    parentSpanId: $parentSpanId,
+                    request: $request,
+                    streamStart: $streamStart,
+                ),
+                endEventFactory: fn (string $spanId, string $traceId, ?string $parentSpanId, StreamEndEvent $streamEnd, array $events): StreamingCompleted => new StreamingCompleted(
+                    spanId: $spanId,
+                    traceId: $traceId,
+                    parentSpanId: $parentSpanId,
+                    request: $request,
+                    streamEnd: $streamEnd,
+                    events: $events
+                ),
+                execute: fn (): Generator => $this->withStreamingTelemetry(
+                    startEventFactory: fn (string $spanId, string $traceId, ?string $parentSpanId, StepStartEvent $stepStartEvent): StreamStepStarted => new StreamStepStarted(
+                        spanId: $spanId,
+                        traceId: $traceId,
+                        parentSpanId: $parentSpanId,
+                        request: $request,
+                        stepStart: $stepStartEvent
+                    ),
+                    endEventFactory: fn (string $spanId, string $traceId, ?string $parentSpanId, StepFinishEvent $stepFinishEvent, array $events): StreamStepCompleted => new StreamStepCompleted(
+                        spanId: $spanId,
+                        traceId: $traceId,
+                        parentSpanId: $parentSpanId,
+                        request: $request,
+                        stepFinish: $stepFinishEvent,
+                        events: $events
+                    ),
+                    execute: fn (): Generator => $this->provider->stream($request),
+                    startEventType: StepStartEvent::class,
+                    endEventType: StepFinishEvent::class,
+                ),
+                startEventType: StreamStartEvent::class,
+                endEventType: StreamEndEvent::class,
+            );
         } catch (RequestException $e) {
             $this->provider->handleRequestException($request->model(), $e);
         }

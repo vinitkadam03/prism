@@ -97,9 +97,10 @@ class Structured
      */
     protected function handleToolCalls(array $data, Request $request): StructuredResponse
     {
+        $hasPendingToolCalls = false;
         $toolCalls = ToolCallMap::map(data_get($data, 'choices.0.message.tool_calls', []));
 
-        $toolResults = $this->callTools($request->tools(), $toolCalls);
+        $toolResults = $this->callTools($request->tools(), $toolCalls, $hasPendingToolCalls);
 
         $this->addStep($data, $request, $toolResults);
 

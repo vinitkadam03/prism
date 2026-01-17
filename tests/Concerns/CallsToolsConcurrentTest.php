@@ -12,7 +12,7 @@ class TestToolCaller
 {
     use CallsTools {
         callToolsAndYieldEvents as public;
-        groupToolCallsByConcurrency as public;
+        resolveToolCalls as public;
     }
 }
 
@@ -269,15 +269,15 @@ it('groups tools correctly by concurrency status', function (): void {
         new ToolCall('call2', 'sequential', ['input' => 'test2']),
     ];
     $hasPendingToolCalls = false;
-    $grouped = $this->caller->groupToolCallsByConcurrency(
+    $resolved = $this->caller->resolveToolCalls(
         [$concurrentTool, $sequentialTool],
         $toolCalls,
         $hasPendingToolCalls
     );
 
-    expect($grouped)->toHaveKeys(['concurrent', 'sequential']);
-    expect($grouped['concurrent'])->toHaveCount(1);
-    expect($grouped['sequential'])->toHaveCount(1);
-    expect($grouped['concurrent'][0]->name)->toBe('concurrent');
-    expect($grouped['sequential'][1]->name)->toBe('sequential');
+    expect($resolved)->toHaveKeys(['concurrent', 'sequential']);
+    expect($resolved['concurrent'])->toHaveCount(1);
+    expect($resolved['sequential'])->toHaveCount(1);
+    expect($resolved['concurrent'][0]['toolCall']->name)->toBe('concurrent');
+    expect($resolved['sequential'][1]['toolCall']->name)->toBe('sequential');
 });
