@@ -15,14 +15,14 @@ class CallsToolsTestHandler
 {
     use CallsTools;
 
-    public function execute(array $tools, array $toolCalls): array
+    public function execute(array $tools, array $toolCalls, bool &$hasDeferredTools = false): array
     {
-        return $this->callTools($tools, $toolCalls);
+        return $this->callTools($tools, $toolCalls, $hasDeferredTools);
     }
 
-    public function stream(array $tools, array $toolCalls, string $messageId, array &$toolResults): Generator
+    public function stream(array $tools, array $toolCalls, string $messageId, array &$toolResults, bool &$hasDeferredTools = false): Generator
     {
-        return $this->callToolsAndYieldEvents($tools, $toolCalls, $messageId, $toolResults);
+        return $this->callToolsAndYieldEvents($tools, $toolCalls, $messageId, $toolResults, $hasDeferredTools);
     }
 }
 

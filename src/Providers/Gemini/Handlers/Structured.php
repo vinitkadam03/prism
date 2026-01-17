@@ -200,16 +200,18 @@ class Structured
      */
     protected function handleToolCalls(array $data, Request $request): StructuredResponse
     {
+        $hasDeferredTools = false;
         $toolResults = $this->callTools(
             $request->tools(),
-            ToolCallMap::map(data_get($data, 'candidates.0.content.parts', []))
+            ToolCallMap::map(data_get($data, 'candidates.0.content.parts', [])),
+            $hasDeferredTools,
         );
 
         $request->addMessage(new ToolResultMessage($toolResults));
 
         $this->addStep($data, $request, FinishReason::ToolCalls, $toolResults);
 
-        if ($this->shouldContinue($request)) {
+        if (! $hasDeferredTools && $this->shouldContinue($request)) {
             return $this->handle($request);
         }
 

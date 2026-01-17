@@ -7,6 +7,7 @@ namespace Prism\Prism\Concerns;
 use Generator;
 use Illuminate\Support\ItemNotFoundException;
 use Illuminate\Support\MultipleItemsFoundException;
+use JsonException;
 use Prism\Prism\Exceptions\PrismException;
 use Prism\Prism\Streaming\EventID;
 use Prism\Prism\Streaming\Events\ArtifactEvent;
@@ -24,13 +25,15 @@ trait CallsTools
      * @param  Tool[]  $tools
      * @param  ToolCall[]  $toolCalls
      * @return ToolResult[]
+     *
+     * @throws PrismException|JsonException
      */
-    protected function callTools(array $tools, array $toolCalls): array
+    protected function callTools(array $tools, array $toolCalls, bool &$hasDeferredTools): array
     {
         $toolResults = [];
 
         // Consume generator to execute all tools and collect results
-        foreach ($this->callToolsAndYieldEvents($tools, $toolCalls, EventID::generate(), $toolResults) as $event) {
+        foreach ($this->callToolsAndYieldEvents($tools, $toolCalls, EventID::generate(), $toolResults, $hasDeferredTools) as $event) {
             // Events are discarded for non-streaming handlers
         }
 
@@ -45,11 +48,17 @@ trait CallsTools
      * @param  ToolResult[]  $toolResults  Results are collected into this array by reference
      * @return Generator<ToolResultEvent|ArtifactEvent>
      */
-    protected function callToolsAndYieldEvents(array $tools, array $toolCalls, string $messageId, array &$toolResults): Generator
+    protected function callToolsAndYieldEvents(array $tools, array $toolCalls, string $messageId, array &$toolResults, bool &$hasDeferredTools): Generator
     {
         foreach ($toolCalls as $toolCall) {
             try {
                 $tool = $this->resolveTool($toolCall->name, $tools);
+
+                if ($tool->isClientExecuted()) {
+                    $hasDeferredTools = true;
+                    continue;
+                }
+
                 $output = call_user_func_array(
                     $tool->handle(...),
                     $toolCall->arguments()
@@ -113,6 +122,8 @@ trait CallsTools
 
     /**
      * @param  Tool[]  $tools
+     *
+     * @throws PrismException
      */
     protected function resolveTool(string $name, array $tools): Tool
     {
