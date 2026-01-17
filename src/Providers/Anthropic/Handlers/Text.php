@@ -43,11 +43,12 @@ class Text
 
     public function __construct(protected PendingRequest $client, protected TextRequest $request)
     {
-        $this->responseBuilder = new ResponseBuilder;
+        $this->responseBuilder = (new ResponseBuilder)->forRequest($request);
     }
 
     public function handle(): Response
     {
+        $this->responseBuilder->beginStep();
         $this->sendRequest();
 
         $this->prepareTempResponse();
@@ -93,6 +94,8 @@ class Text
 
     protected function handleToolCalls(): Response
     {
+        $this->responseBuilder->markStepTimingComplete();
+
         $hasPendingToolCalls = false;
         $toolResults = $this->callTools($this->request->tools(), $this->tempResponse->toolCalls, $hasPendingToolCalls);
 

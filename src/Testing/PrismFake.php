@@ -248,7 +248,8 @@ class PrismFake extends Provider
 
         yield new StepStartEvent(
             id: EventID::generate(),
-            timestamp: time()
+            timestamp: time(),
+            request: $request
         );
 
         if ($response->steps->isNotEmpty()) {
@@ -308,7 +309,8 @@ class PrismFake extends Provider
                     );
                     yield new StepStartEvent(
                         id: EventID::generate(),
-                        timestamp: time()
+                        timestamp: time(),
+                        request: $request
                     );
                 }
             }

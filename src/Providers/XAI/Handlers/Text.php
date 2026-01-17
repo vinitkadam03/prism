@@ -41,6 +41,8 @@ class Text
 
     public function handle(Request $request): TextResponse
     {
+        $this->responseBuilder->forRequest($request)->beginStep();
+
         $response = $this->sendRequest($request);
 
         $this->validateResponse($response);
@@ -69,6 +71,8 @@ class Text
         if ($toolCalls === []) {
             throw new PrismException('XAI: finish reason is tool_calls but no tool calls found in response');
         }
+
+        $this->responseBuilder->markStepTimingComplete();
 
         $hasPendingToolCalls = false;
         $toolResults = $this->callTools($request->tools(), $toolCalls, $hasPendingToolCalls);
