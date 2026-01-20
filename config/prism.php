@@ -86,10 +86,11 @@ return [
                 'service_name' => env('PHOENIX_SERVICE_NAME', 'prism'),
                 'mapper' => \Prism\Prism\Telemetry\Semantics\OpenInferenceMapper::class,
                 'timeout' => 30.0,
+                // 'transport_content_type' => \OpenTelemetry\Contrib\Otlp\ContentTypes::PROTOBUF,
                 'resource_attributes' => [
                     'openinference.project.name' => env('PHOENIX_PROJECT_NAME', 'default'),
-//                     'deployment.environment' => env('APP_ENV', 'production'),
-//                     'service.version' => env('APP_VERSION', '1.0.0'),
+                    // 'deployment.environment' => env('APP_ENV', 'production'),
+                    // 'service.version' => env('APP_VERSION'),
                 ],
                 // Tags applied to all spans (useful for filtering)
                 'tags' => [

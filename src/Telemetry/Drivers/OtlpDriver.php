@@ -109,7 +109,7 @@ class OtlpDriver implements TelemetryDriver
 
         $transport = (new OtlpHttpTransportFactory)->create(
             endpoint: $this->config['endpoint'] ?? 'http://localhost:4318/v1/traces',
-            contentType: ContentTypes::JSON,
+            contentType: $this->config['transport_content_type'] ?? ContentTypes::PROTOBUF,
             headers: ($key = $this->config['api_key'] ?? null) ? ['Authorization' => "Bearer {$key}"] : [],
             timeout: (float) ($this->config['timeout'] ?? 30.0),
         );
