@@ -72,7 +72,7 @@ trait CallsTools
                     toolCall: $toolCall,
                     toolResult: $event->toolResult,
                 ),
-                execute: function () use ($tools, $toolCall, $messageId, &$toolResults): Generator {
+                execute: function () use ($tools, $toolCall, $messageId, &$toolResults, &$hasPendingToolCalls): Generator {
                     try {
                         $tool = $this->resolveTool($toolCall->name, $tools);
 
