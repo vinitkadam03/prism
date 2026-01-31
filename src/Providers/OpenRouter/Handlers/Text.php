@@ -44,14 +44,6 @@ class Text
 
         $this->validateResponse($data);
 
-        $responseMessage = new AssistantMessage(
-            data_get($data, 'choices.0.message.content') ?? '',
-            ToolCallMap::map(data_get($data, 'choices.0.message.tool_calls', [])),
-            []
-        );
-
-        $request = $request->addMessage($responseMessage);
-
         return match ($this->mapFinishReason($data)) {
             FinishReason::ToolCalls => $this->handleToolCalls($data, $request),
             FinishReason::Stop, FinishReason::Length => $this->handleStop($data, $request),
@@ -64,15 +56,19 @@ class Text
      */
     protected function handleToolCalls(array $data, Request $request): TextResponse
     {
-        $toolResults = $this->callTools(
-            $request->tools(),
-            ToolCallMap::map(data_get($data, 'choices.0.message.tool_calls', []))
-        );
+        $toolCalls = ToolCallMap::map(data_get($data, 'choices.0.message.tool_calls', []));
 
-        $request = $request->addMessage(new ToolResultMessage($toolResults));
-        $request->resetToolChoice();
+        $toolResults = $this->callTools($request->tools(), $toolCalls);
 
         $this->addStep($data, $request, $toolResults);
+
+        $request = $request->addMessage(new AssistantMessage(
+            data_get($data, 'choices.0.message.content') ?? '',
+            $toolCalls,
+            []
+        ));
+        $request = $request->addMessage(new ToolResultMessage($toolResults));
+        $request->resetToolChoice();
 
         if ($this->shouldContinue($request)) {
             return $this->handle($request);

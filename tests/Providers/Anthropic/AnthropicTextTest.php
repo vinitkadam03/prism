@@ -18,6 +18,8 @@ use Prism\Prism\Facades\Tool;
 use Prism\Prism\Providers\Anthropic\Handlers\Text;
 use Prism\Prism\ValueObjects\Media\Document;
 use Prism\Prism\ValueObjects\MessagePartWithCitations;
+use Prism\Prism\ValueObjects\Messages\AssistantMessage;
+use Prism\Prism\ValueObjects\Messages\ToolResultMessage;
 use Prism\Prism\ValueObjects\Messages\UserMessage;
 use Prism\Prism\ValueObjects\ProviderRateLimit;
 use Prism\Prism\ValueObjects\ProviderTool;
@@ -102,6 +104,22 @@ describe('tools', function (): void {
             'city' => 'Detroit',
         ]);
 
+        // Verify the assistant message from step 1 is present in step 2's input messages
+        expect($secondStep->messages)->toHaveCount(3);
+        expect($secondStep->messages[0])->toBeInstanceOf(UserMessage::class);
+        expect($secondStep->messages[1])->toBeInstanceOf(AssistantMessage::class);
+        expect($secondStep->messages[1]->toolCalls)->toHaveCount(1);
+        expect($secondStep->messages[1]->toolCalls[0]->name)->toBe('search');
+        expect($secondStep->messages[2])->toBeInstanceOf(ToolResultMessage::class);
+
+        // Verify the assistant message from step 2 is present in step 3's input messages
+        $thirdStep = $response->steps[2];
+        expect($thirdStep->messages)->toHaveCount(5);
+        expect($thirdStep->messages[3])->toBeInstanceOf(AssistantMessage::class);
+        expect($thirdStep->messages[3]->toolCalls)->toHaveCount(1);
+        expect($thirdStep->messages[3]->toolCalls[0]->name)->toBe('weather');
+        expect($thirdStep->messages[4])->toBeInstanceOf(ToolResultMessage::class);
+
         // Assert usage
         expect($response->usage->promptTokens)->toBe(1650);
         expect($response->usage->completionTokens)->toBe(307);
@@ -155,6 +173,16 @@ describe('tools', function (): void {
             ->asText();
 
         expect($response->text)->toContain('235');
+        expect($response->steps)->toHaveCount(2);
+
+        // Verify the assistant message from step 1 is present in step 2's input messages
+        $secondStep = $response->steps[1];
+        expect($secondStep->messages)->toHaveCount(3)
+            ->and($secondStep->messages[0])->toBeInstanceOf(UserMessage::class)
+            ->and($secondStep->messages[1])->toBeInstanceOf(AssistantMessage::class)
+            ->and($secondStep->messages[1]->toolCalls)->toHaveCount(1)
+            ->and($secondStep->messages[1]->toolCalls[0]->name)->toBe('weather')
+            ->and($secondStep->messages[2])->toBeInstanceOf(ToolResultMessage::class);
     });
 
     it('handles specific tool choice', function (): void {
@@ -465,7 +493,7 @@ describe('Anthropic extended thinking', function (): void {
         expect($response->additionalContent['thinking'])->toBe($expected_thinking);
         expect($response->additionalContent['thinking_signature'])->toBe($expected_signature);
 
-        expect($response->steps->last()->messages[1])
+        expect($response->messages->last())
             ->additionalContent->thinking->toBe($expected_thinking)
             ->additionalContent->thinking_signature->toBe($expected_signature);
     });
@@ -517,7 +545,8 @@ describe('Anthropic extended thinking', function (): void {
             ->additionalContent->thinking->toBe($expected_thinking)
             ->additionalContent->thinking_signature->toBe($expected_signature);
 
-        expect($response->steps->first()->messages[1])
+        // Verify the assistant message with thinking is present in the second step's input messages
+        expect($response->steps->last()->messages[1])
             ->additionalContent->thinking->toBe($expected_thinking)
             ->additionalContent->thinking_signature->toBe($expected_signature);
     });

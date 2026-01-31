@@ -15,6 +15,8 @@ use Prism\Prism\Facades\Tool;
 use Prism\Prism\ValueObjects\Media\Document;
 use Prism\Prism\ValueObjects\Media\Image;
 use Prism\Prism\ValueObjects\MessagePartWithCitations;
+use Prism\Prism\ValueObjects\Messages\AssistantMessage;
+use Prism\Prism\ValueObjects\Messages\ToolResultMessage;
 use Prism\Prism\ValueObjects\Messages\UserMessage;
 use Prism\Prism\ValueObjects\ProviderTool;
 use Prism\Prism\ValueObjects\ProviderToolCall;
@@ -187,6 +189,16 @@ describe('tools', function (): void {
         expect($firstStep->toolCalls[1]->arguments())->toBe([
             'city' => 'Detroit',
         ]);
+
+        // Verify the assistant message from step 1 is present in step 2's input messages
+        $secondStep = $response->steps[1];
+        expect($secondStep->messages)->toHaveCount(3);
+        expect($secondStep->messages[0])->toBeInstanceOf(UserMessage::class);
+        expect($secondStep->messages[1])->toBeInstanceOf(AssistantMessage::class);
+        expect($secondStep->messages[1]->toolCalls)->toHaveCount(2);
+        expect($secondStep->messages[1]->toolCalls[0]->name)->toBe('search');
+        expect($secondStep->messages[1]->toolCalls[1]->name)->toBe('weather');
+        expect($secondStep->messages[2])->toBeInstanceOf(ToolResultMessage::class);
 
         expect($response->usage->promptTokens)->toBeNumeric();
         expect($response->usage->completionTokens)->toBeNumeric();
@@ -735,6 +747,13 @@ describe('provider tool results', function (): void {
         expect($secondStep->toolCalls)->toHaveCount(0);
         expect($secondStep->providerToolCalls)->toHaveCount(1);
         expect($secondStep->providerToolCalls[0]->type)->toBe('code_interpreter_call');
+
+        // Verify the assistant message from step 1 is present in step 2's input messages
+        expect($secondStep->messages)->toHaveCount(3);
+        expect($secondStep->messages[1])->toBeInstanceOf(AssistantMessage::class);
+        expect($secondStep->messages[1]->toolCalls)->toHaveCount(1);
+        expect($secondStep->messages[1]->toolCalls[0]->name)->toBe('weather');
+        expect($secondStep->messages[2])->toBeInstanceOf(ToolResultMessage::class);
     });
 });
 

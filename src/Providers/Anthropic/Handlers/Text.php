@@ -52,14 +52,6 @@ class Text
 
         $this->prepareTempResponse();
 
-        $responseMessage = new AssistantMessage(
-            $this->tempResponse->text,
-            $this->tempResponse->toolCalls,
-            $this->tempResponse->additionalContent,
-        );
-
-        $this->request->addMessage($responseMessage);
-
         return match ($this->tempResponse->finishReason) {
             FinishReason::ToolCalls => $this->handleToolCalls(),
             FinishReason::Stop, FinishReason::Length => $this->handleStop(),
@@ -102,17 +94,24 @@ class Text
     protected function handleToolCalls(): Response
     {
         $toolResults = $this->callTools($this->request->tools(), $this->tempResponse->toolCalls);
-        $message = new ToolResultMessage($toolResults);
+
+        $this->addStep($toolResults);
+
+        $this->request->addMessage(new AssistantMessage(
+            $this->tempResponse->text,
+            $this->tempResponse->toolCalls,
+            $this->tempResponse->additionalContent,
+        ));
+
+        $toolResultMessage = new ToolResultMessage($toolResults);
 
         // Apply tool result caching if configured
         if ($tool_result_cache_type = $this->request->providerOptions('tool_result_cache_type')) {
-            $message->withProviderOptions(['cacheType' => $tool_result_cache_type]);
+            $toolResultMessage->withProviderOptions(['cacheType' => $tool_result_cache_type]);
         }
 
-        $this->request->addMessage($message);
+        $this->request->addMessage($toolResultMessage);
         $this->request->resetToolChoice();
-
-        $this->addStep($toolResults);
 
         if ($this->responseBuilder->steps->count() < $this->request->maxSteps()) {
             return $this->handle();
