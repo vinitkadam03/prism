@@ -391,6 +391,12 @@ class Stream
         $toolResults = [];
         yield from $this->callToolsAndYieldEvents($request->tools(), $mappedToolCalls, $this->state->messageId(), $toolResults);
 
+        $this->state->markStepFinished();
+        yield new StepFinishEvent(
+            id: EventID::generate(),
+            timestamp: time()
+        );
+
         $request->addMessage(new AssistantMessage($text, $mappedToolCalls));
         $request->addMessage(new ToolResultMessage($toolResults));
         $request->resetToolChoice();
@@ -400,12 +406,6 @@ class Stream
             ->withMessageId(EventID::generate('msg'));
 
         $depth++;
-
-        $this->state->markStepFinished();
-        yield new StepFinishEvent(
-            id: EventID::generate(),
-            timestamp: time()
-        );
 
         if ($depth < $request->maxSteps()) {
             $nextResponse = $this->sendRequest($request);

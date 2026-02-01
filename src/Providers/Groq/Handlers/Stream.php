@@ -279,16 +279,16 @@ class Stream
         $toolResults = [];
         yield from $this->callToolsAndYieldEvents($request->tools(), $mappedToolCalls, $this->state->messageId(), $toolResults);
 
-        $request->addMessage(new AssistantMessage($text, $mappedToolCalls));
-        $request->addMessage(new ToolResultMessage($toolResults));
-        $request->resetToolChoice();
-
         // Emit step finish after tool calls
         $this->state->markStepFinished();
         yield new StepFinishEvent(
             id: EventID::generate(),
             timestamp: time()
         );
+
+        $request->addMessage(new AssistantMessage($text, $mappedToolCalls));
+        $request->addMessage(new ToolResultMessage($toolResults));
+        $request->resetToolChoice();
 
         // Reset text state for next response
         $this->state->resetTextState();

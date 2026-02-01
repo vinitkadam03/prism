@@ -503,6 +503,13 @@ class Stream
 
         // Add messages to request for next turn
         if ($toolResults !== []) {
+            // Emit step finish after tool calls
+            $this->state->markStepFinished();
+            yield new StepFinishEvent(
+                id: EventID::generate(),
+                timestamp: time()
+            );
+
             $request->addMessage(new AssistantMessage(
                 content: $this->state->currentText(),
                 toolCalls: $toolCalls,
@@ -514,13 +521,6 @@ class Stream
 
             $request->addMessage(new ToolResultMessage($toolResults));
             $request->resetToolChoice();
-
-            // Emit step finish after tool calls
-            $this->state->markStepFinished();
-            yield new StepFinishEvent(
-                id: EventID::generate(),
-                timestamp: time()
-            );
 
             // Continue streaming if within step limit
             $depth++;

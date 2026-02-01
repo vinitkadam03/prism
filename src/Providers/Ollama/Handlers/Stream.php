@@ -294,17 +294,17 @@ class Stream
         $toolResults = [];
         yield from $this->callToolsAndYieldEvents($request->tools(), $mappedToolCalls, $this->state->messageId(), $toolResults);
 
-        // Add messages for next turn
-        $request->addMessage(new AssistantMessage($text, $mappedToolCalls));
-        $request->addMessage(new ToolResultMessage($toolResults));
-        $request->resetToolChoice();
-
         // Emit step finish after tool calls
         $this->state->markStepFinished();
         yield new StepFinishEvent(
             id: EventID::generate(),
             timestamp: time()
         );
+
+        // Add messages for next turn
+        $request->addMessage(new AssistantMessage($text, $mappedToolCalls));
+        $request->addMessage(new ToolResultMessage($toolResults));
+        $request->resetToolChoice();
 
         // Continue streaming if within step limit
         $depth++;
