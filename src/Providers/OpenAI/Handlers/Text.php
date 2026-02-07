@@ -51,6 +51,8 @@ class Text
 
     public function handle(Request $request): Response
     {
+        $this->responseBuilder->forRequest($request)->beginStep();
+
         $response = $this->sendRequest($request);
 
         $this->validateResponse($response);
@@ -72,6 +74,8 @@ class Text
      */
     protected function handleToolCalls(array $data, Request $request, ClientResponse $clientResponse): Response
     {
+        $this->responseBuilder->markStepTimingComplete();
+
         $toolCalls = ToolCallMap::map(
             array_filter(data_get($data, 'output', []), fn (array $output): bool => $output['type'] === 'function_call'),
             array_filter(data_get($data, 'output', []), fn (array $output): bool => $output['type'] === 'reasoning'),

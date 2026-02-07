@@ -41,6 +41,8 @@ class Text
 
     public function handle(Request $request): TextResponse
     {
+        $this->responseBuilder->forRequest($request)->beginStep();
+
         $data = $this->sendRequest($request);
 
         $this->validateResponse($data);
@@ -57,6 +59,8 @@ class Text
      */
     protected function handleToolCalls(array $data, Request $request): TextResponse
     {
+        $this->responseBuilder->markStepTimingComplete();
+
         $toolCalls = ToolCallMap::map(data_get($data, 'choices.0.message.tool_calls', []));
 
         $hasPendingToolCalls = false;
