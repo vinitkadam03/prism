@@ -25,7 +25,7 @@ it('resolves log driver with configuration', function (): void {
     expect($driver)->toBeInstanceOf(LogDriver::class);
 });
 
-it('resolves phoenix as otlp driver with openinference mapper', function (): void {
+it('resolves phoenix as otlp driver with span processor config', function (): void {
     $manager = new TelemetryManager(app());
 
     $driver = $manager->resolve('phoenix');

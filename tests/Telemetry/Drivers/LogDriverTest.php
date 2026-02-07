@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 use Illuminate\Support\Facades\Log;
 use Prism\Prism\Telemetry\Drivers\LogDriver;
+use Prism\Prism\Telemetry\Otel\PrismSemanticConventions;
 use Tests\Telemetry\Helpers\TelemetryTestHelpers;
 
 beforeEach(function (): void {
@@ -66,7 +67,7 @@ it('handles different channel configurations', function (): void {
     $defaultDriver->recordSpan(TelemetryTestHelpers::createTextGenerationSpanData());
 });
 
-it('logs attributes extracted from domain objects', function (): void {
+it('logs prism.* attributes extracted from domain objects', function (): void {
     Log::shouldReceive('channel')
         ->with('test-channel')
         ->once()
@@ -75,9 +76,9 @@ it('logs attributes extracted from domain objects', function (): void {
     Log::shouldReceive('info')
         ->once()
         ->with('Span recorded', Mockery::on(
-            fn ($data): bool => $data['attributes']['model'] === 'gpt-4'
-            && $data['attributes']['provider'] === 'openai'
-            && $data['attributes']['usage']['prompt_tokens'] === 10));
+            fn ($data): bool => $data['attributes'][PrismSemanticConventions::MODEL] === 'gpt-4'
+            && $data['attributes'][PrismSemanticConventions::PROVIDER] === 'openai'
+            && $data['attributes'][PrismSemanticConventions::USAGE_PROMPT_TOKENS] === 10));
 
     $driver = new LogDriver('test-channel');
     $spanData = TelemetryTestHelpers::createTextGenerationSpanData();

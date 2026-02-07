@@ -28,7 +28,7 @@ use Prism\Prism\Telemetry\Events\ToolCallStarted;
  *
  * This collector acts as a thin coordination layer - it tracks pending spans
  * and passes the original events (with their domain objects) to drivers.
- * Drivers/mappers are responsible for extracting whatever attributes they need.
+ * Drivers are responsible for extracting whatever attributes they need.
  */
 class SpanCollector
 {

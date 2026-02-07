@@ -25,8 +25,8 @@ use Throwable;
  * Immutable DTO representing a complete telemetry span.
  *
  * Contains the original start/end events with full access to domain objects
- * (Request, Response, ToolCall, etc.). Drivers and mappers can extract
- * whatever attributes they need directly from these typed events.
+ * (Request, Response, ToolCall, etc.). Drivers can extract whatever attributes
+ * they need directly from these typed events.
  */
 readonly class SpanData
 {
