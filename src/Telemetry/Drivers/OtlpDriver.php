@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Prism\Prism\Telemetry\Drivers;
 
+use Illuminate\Contracts\Container\Container;
 use OpenTelemetry\API\Common\Time\Clock;
 use OpenTelemetry\API\Trace\Span;
 use OpenTelemetry\API\Trace\SpanContext;
@@ -17,12 +18,13 @@ use OpenTelemetry\Contrib\Otlp\SpanExporter;
 use OpenTelemetry\SDK\Common\Attribute\Attributes;
 use OpenTelemetry\SDK\Resource\ResourceInfo;
 use OpenTelemetry\SDK\Trace\Sampler\AlwaysOnSampler;
+use OpenTelemetry\SDK\Trace\SpanExporterInterface;
 use OpenTelemetry\SDK\Trace\SpanProcessor\BatchSpanProcessor;
+use OpenTelemetry\SDK\Trace\SpanProcessorInterface;
 use OpenTelemetry\SDK\Trace\TracerProvider;
 use Prism\Prism\Contracts\TelemetryDriver;
-use Prism\Prism\Telemetry\Contracts\SemanticMapperInterface;
 use Prism\Prism\Telemetry\Otel\PrimedIdGenerator;
-use Prism\Prism\Telemetry\Semantics\PassthroughMapper;
+use Prism\Prism\Telemetry\Otel\PrismSpanAttributes;
 use Prism\Prism\Telemetry\SpanData;
 
 class OtlpDriver implements TelemetryDriver
@@ -31,18 +33,15 @@ class OtlpDriver implements TelemetryDriver
 
     protected ?PrimedIdGenerator $idGenerator = null;
 
-    protected SemanticMapperInterface $mapper;
-
     /** @var array<string, mixed> */
     protected array $config;
 
-    public function __construct(protected string $driver = 'otlp')
-    {
+    public function __construct(
+        protected string $driver = 'otlp',
+        protected ?Container $container = null,
+    ) {
         $this->config = config("prism.telemetry.drivers.{$this->driver}", []);
-
-        /** @var class-string<SemanticMapperInterface> $mapperClass */
-        $mapperClass = $this->config['mapper'] ?? PassthroughMapper::class;
-        $this->mapper = new $mapperClass;
+        $this->container = $container ?? app();
     }
 
     public function recordSpan(SpanData $spanData): void
@@ -66,36 +65,25 @@ class OtlpDriver implements TelemetryDriver
 
         $span = $spanBuilder->startSpan();
 
-        // Merge config tags into span metadata before mapping
-        $spanDataWithTags = $spanData;
-        if ($tags = $this->config['tags'] ?? null) {
-            $mergedMetadata = array_merge($spanData->metadata, ['tags' => $tags]);
-            $spanDataWithTags = new SpanData(
-                spanId: $spanData->spanId,
-                traceId: $spanData->traceId,
-                parentSpanId: $spanData->parentSpanId,
-                operation: $spanData->operation,
-                startTimeNano: $spanData->startTimeNano,
-                endTimeNano: $spanData->endTimeNano,
-                startEvent: $spanData->startEvent,
-                endEvent: $spanData->endEvent,
-                events: $spanData->events,
-                exception: $spanData->exception,
-                metadata: $mergedMetadata,
-            );
-        }
-
-        // Map span data to semantic convention format
-        $attributes = $this->mapper->map($spanDataWithTags);
+        // Set prism.* attributes -- the SpanProcessor will remap these
+        // to the target convention (OpenInference, GenAI, etc.) in onEnding()
+        $driverMetadata = ($tags = $this->config['tags'] ?? null) ? ['tags' => $tags] : [];
+        $attributes = PrismSpanAttributes::extract($spanData, $driverMetadata);
 
         foreach ($attributes as $key => $value) {
-            if ($key !== '') { // TODO: check if this is needed
-                $span->setAttribute($key, is_array($value) ? json_encode($value) : $value);
-            }
+            $span->setAttribute($key, $value);
         }
 
-        foreach ($this->mapper->mapEvents($spanData->events) as $event) {
-            $span->addEvent($event['name'], Attributes::create($event['attributes']), $event['timeNanos']);
+        // Add span events (exceptions, etc.) in standard OTel format
+        foreach ($spanData->events as $event) {
+            $eventAttributes = $event['name'] === 'exception' ? [
+                'exception.type' => $event['attributes']['type'] ?? 'Unknown',
+                'exception.message' => $event['attributes']['message'] ?? '',
+                'exception.stacktrace' => $event['attributes']['stacktrace'] ?? '',
+                'exception.escaped' => true,
+            ] : $event['attributes'];
+
+            $span->addEvent($event['name'], Attributes::create($eventAttributes), $event['timeNanos']);
         }
 
         if ($spanData->hasError()) {
@@ -130,9 +118,11 @@ class OtlpDriver implements TelemetryDriver
             timeout: (float) ($this->config['timeout'] ?? 30.0),
         );
 
+        // @phpstan-ignore argument.type (TransportInterface generic type variance issue with OpenTelemetry)
+        $exporter = new SpanExporter($transport);
+
         return $this->provider = new TracerProvider(
-            // @phpstan-ignore argument.type (TransportInterface generic type variance issue with OpenTelemetry)
-            spanProcessors: [new BatchSpanProcessor(new SpanExporter($transport), Clock::getDefault())],
+            spanProcessors: [$this->createSpanProcessor($exporter)],
             sampler: new AlwaysOnSampler,
             resource: ResourceInfo::create(Attributes::create(array_merge(
                 ['service.name' => $this->config['service_name'] ?? 'prism'],
@@ -140,6 +130,32 @@ class OtlpDriver implements TelemetryDriver
             ))),
             idGenerator: $this->idGenerator(),
         );
+    }
+
+    /**
+     * Create the span processor from config.
+     *
+     * The `span_processor` config accepts a class-string of a SpanProcessorInterface
+     * implementation. The class is resolved through the container with the exporter
+     * and clock injected, so users get full DI support.
+     *
+     * For custom construction logic, bind the class in a ServiceProvider.
+     *
+     * Defaults to BatchSpanProcessor when not configured.
+     */
+    protected function createSpanProcessor(SpanExporterInterface $exporter): SpanProcessorInterface
+    {
+        /** @var class-string<SpanProcessorInterface>|null $processorClass */
+        $processorClass = $this->config['span_processor'] ?? null;
+
+        if ($processorClass === null) {
+            return new BatchSpanProcessor($exporter, Clock::getDefault());
+        }
+
+        return $this->container->make($processorClass, [
+            'exporter' => $exporter,
+            'clock' => Clock::getDefault(),
+        ]);
     }
 
     protected function idGenerator(): PrimedIdGenerator

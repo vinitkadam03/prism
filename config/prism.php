@@ -1,6 +1,6 @@
 <?php
 
-use Prism\Prism\Telemetry\Semantics\OpenInferenceMapper;
+use Prism\Prism\Telemetry\Otel\OpenInferenceBatchSpanProcessor;
 
 return [
     'prism_server' => [
@@ -80,13 +80,17 @@ return [
                 'channel' => env('PRISM_TELEMETRY_LOG_CHANNEL', 'prism-telemetry'),
             ],
 
-            // Phoenix Arize - OTLP with OpenInference semantic conventions
+            // Phoenix Arize - OTLP with OpenInference semantic conventions.
+            //
+            // span_processor: class-string of a SpanProcessorInterface implementation.
+            // Resolved via the container with (SpanExporterInterface, ClockInterface) injected.
+            // Omit to use the default BatchSpanProcessor (no attribute remapping).
             'phoenix' => [
                 'driver' => 'otlp',
                 'endpoint' => env('PHOENIX_ENDPOINT', 'https://app.phoenix.arize.com/v1/traces'),
                 'api_key' => env('PHOENIX_API_KEY'),
                 'service_name' => env('PHOENIX_SERVICE_NAME', 'prism'),
-                'mapper' => OpenInferenceMapper::class,
+                'span_processor' => OpenInferenceBatchSpanProcessor::class,
                 'timeout' => 30.0,
                 // 'transport_content_type' => \OpenTelemetry\Contrib\Otlp\ContentTypes::PROTOBUF,
                 'resource_attributes' => [
@@ -102,12 +106,20 @@ return [
             ],
 
             // Example: Langfuse OTLP backend
+            // Community packages provide their own SpanProcessor class.
             // 'langfuse' => [
             //     'driver' => 'otlp',
             //     'endpoint' => env('LANGFUSE_ENDPOINT', 'https://cloud.langfuse.com/api/public/otel/v1/traces'),
             //     'api_key' => env('LANGFUSE_API_KEY'),
             //     'service_name' => env('LANGFUSE_SERVICE_NAME', 'prism'),
-            //     'mapper' => \Prism\Prism\Telemetry\Semantics\PassthroughMapper::class,
+            //     'span_processor' => \PrismLangfuse\LangfuseBatchSpanProcessor::class,
+            // ],
+
+            // Example: Plain OTLP (Jaeger, etc.) - no attribute remapping
+            // 'jaeger' => [
+            //     'driver' => 'otlp',
+            //     'endpoint' => 'http://localhost:4318/v1/traces',
+            //     // span_processor defaults to BatchSpanProcessor (no remapping)
             // ],
 
             // Example: Custom driver via factory class

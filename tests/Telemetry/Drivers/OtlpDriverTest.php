@@ -12,7 +12,7 @@ use OpenTelemetry\SDK\Trace\TracerProvider;
 use Prism\Prism\Enums\TelemetryOperation;
 use Prism\Prism\Telemetry\Drivers\OtlpDriver;
 use Prism\Prism\Telemetry\Otel\PrimedIdGenerator;
-use Prism\Prism\Telemetry\Semantics\OpenInferenceMapper;
+use Prism\Prism\Telemetry\Otel\PrismSemanticConventions;
 use Prism\Prism\Telemetry\SpanData;
 use Tests\Telemetry\Helpers\TelemetryTestHelpers;
 
@@ -118,6 +118,26 @@ describe('SDK Batching', function (): void {
     });
 });
 
+describe('Prism Attributes', function (): void {
+    it('sets prism.* attributes on exported spans', function (): void {
+        $exportedSpans = [];
+        $driver = createTestableOtlpDriver(function ($spans) use (&$exportedSpans): void {
+            $exportedSpans = array_merge($exportedSpans, iterator_to_array($spans));
+        });
+
+        $driver->recordSpan(createOtlpTestSpanData());
+        $driver->shutdown();
+
+        $attrs = $exportedSpans[0]->getAttributes();
+        expect($attrs->get(PrismSemanticConventions::OPERATION))->toBe('prism.text.asText')
+            ->and($attrs->get(PrismSemanticConventions::MODEL))->toBe('gpt-4')
+            ->and($attrs->get(PrismSemanticConventions::PROVIDER))->toBe('openai')
+            ->and($attrs->get(PrismSemanticConventions::RESPONSE_TEXT))->toBe('Hello there!')
+            ->and($attrs->get(PrismSemanticConventions::USAGE_PROMPT_TOKENS))->toBe(10)
+            ->and($attrs->get(PrismSemanticConventions::USAGE_COMPLETION_TOKENS))->toBe(5);
+    });
+});
+
 describe('Error Handling', function (): void {
     it('sets error status for failed spans', function (): void {
         $exportedSpans = [];
@@ -160,10 +180,9 @@ describe('Driver Identity', function (): void {
 });
 
 describe('Configuration', function (): void {
-    it('applies tags from config', function (): void {
+    it('applies tags from config as prism.metadata.tags', function (): void {
         config(['prism.telemetry.drivers.tagged' => [
             'tags' => ['env' => 'testing'],
-            'mapper' => OpenInferenceMapper::class,
         ]]);
 
         $exportedSpans = [];
@@ -174,10 +193,10 @@ describe('Configuration', function (): void {
         $driver->recordSpan(createOtlpTestSpanData());
         $driver->shutdown();
 
-        // tag.tags is a JSON string like '["env:testing"]'
-        $tagsTags = $exportedSpans[0]->getAttributes()->get('tag.tags');
-        expect($tagsTags)->toBeString()
-            ->and($tagsTags)->toContain('env:testing');
+        // Tags are stored as prism.metadata.tags (JSON encoded)
+        $metadataTags = $exportedSpans[0]->getAttributes()->get(PrismSemanticConventions::METADATA_TAGS);
+        expect($metadataTags)->toBeString()
+            ->and($metadataTags)->toContain('testing');
     });
 });
 

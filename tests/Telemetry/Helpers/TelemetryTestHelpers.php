@@ -515,7 +515,7 @@ class TelemetryTestHelpers
      */
     public static function createTextDeltaEvent(string $delta = 'Hello'): TextDeltaEvent
     {
-        return new TextDeltaEvent('event-1', time(), $delta);
+        return new TextDeltaEvent('event-1', time(), $delta, 'msg-1');
     }
 
     /**
@@ -523,7 +523,7 @@ class TelemetryTestHelpers
      */
     public static function createToolCallEvent(?ToolCall $toolCall = null): ToolCallEvent
     {
-        return new ToolCallEvent('event-1', time(), $toolCall ?? self::createToolCall());
+        return new ToolCallEvent('event-1', time(), $toolCall ?? self::createToolCall(), 'msg-1');
     }
 
     /**

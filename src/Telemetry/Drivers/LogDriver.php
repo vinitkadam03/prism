@@ -6,8 +6,7 @@ namespace Prism\Prism\Telemetry\Drivers;
 
 use Illuminate\Support\Facades\Log;
 use Prism\Prism\Contracts\TelemetryDriver;
-use Prism\Prism\Telemetry\Contracts\SemanticMapperInterface;
-use Prism\Prism\Telemetry\Semantics\PassthroughMapper;
+use Prism\Prism\Telemetry\Otel\PrismSpanAttributes;
 use Prism\Prism\Telemetry\SpanData;
 use Throwable;
 
@@ -15,20 +14,16 @@ use Throwable;
  * Log telemetry driver.
  *
  * Logs Prism span data for debugging and development.
- * Uses PassthroughMapper by default for human-readable attribute names.
+ * Uses PrismSpanAttributes for consistent attribute extraction.
  */
 class LogDriver implements TelemetryDriver
 {
-    protected SemanticMapperInterface $mapper;
-
     /**
      * @param  string  $channel  Laravel log channel name
      */
     public function __construct(
         protected string $channel = 'default'
-    ) {
-        $this->mapper = new PassthroughMapper;
-    }
+    ) {}
 
     /**
      * Log a completed span with readable attributes.
@@ -43,7 +38,7 @@ class LogDriver implements TelemetryDriver
             'start_time_nano' => $span->startTimeNano,
             'end_time_nano' => $span->endTimeNano,
             'duration_ms' => $span->durationMs(),
-            'attributes' => $this->mapper->map($span),
+            'attributes' => PrismSpanAttributes::extract($span),
             'events' => $span->events,
             'has_error' => $span->hasError(),
             'exception' => $span->exception instanceof Throwable ? [
