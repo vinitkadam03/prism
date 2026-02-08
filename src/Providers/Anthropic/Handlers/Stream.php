@@ -5,21 +5,19 @@ declare(strict_types=1);
 namespace Prism\Prism\Providers\Anthropic\Handlers;
 
 use Generator;
-use Illuminate\Http\Client\PendingRequest;
 use Illuminate\Http\Client\Response;
 use Illuminate\Support\Arr;
-use Prism\Prism\Concerns\CallsTools;
 use Prism\Prism\Enums\FinishReason;
 use Prism\Prism\Exceptions\PrismStreamDecodeException;
 use Prism\Prism\Providers\Anthropic\Maps\CitationsMapper;
 use Prism\Prism\Providers\Anthropic\ValueObjects\AnthropicStreamState;
+use Prism\Prism\Providers\StreamHandler;
 use Prism\Prism\Streaming\EventID;
 use Prism\Prism\Streaming\Events\CitationEvent;
 use Prism\Prism\Streaming\Events\ErrorEvent;
 use Prism\Prism\Streaming\Events\ProviderToolEvent;
 use Prism\Prism\Streaming\Events\StepFinishEvent;
 use Prism\Prism\Streaming\Events\StepStartEvent;
-use Prism\Prism\Streaming\Events\StreamEndEvent;
 use Prism\Prism\Streaming\Events\StreamEvent;
 use Prism\Prism\Streaming\Events\StreamStartEvent;
 use Prism\Prism\Streaming\Events\TextCompleteEvent;
@@ -30,8 +28,8 @@ use Prism\Prism\Streaming\Events\ThinkingEvent;
 use Prism\Prism\Streaming\Events\ThinkingStartEvent;
 use Prism\Prism\Streaming\Events\ToolCallDeltaEvent;
 use Prism\Prism\Streaming\Events\ToolCallEvent;
+use Prism\Prism\Streaming\StreamState;
 use Prism\Prism\Text\Request;
-use Prism\Prism\ValueObjects\Citation;
 use Prism\Prism\ValueObjects\MessagePartWithCitations;
 use Prism\Prism\ValueObjects\Messages\AssistantMessage;
 use Prism\Prism\ValueObjects\Messages\ToolResultMessage;
@@ -40,17 +38,8 @@ use Prism\Prism\ValueObjects\Usage;
 use Psr\Http\Message\StreamInterface;
 use Throwable;
 
-class Stream
+class Stream extends StreamHandler
 {
-    use CallsTools;
-
-    protected AnthropicStreamState $state;
-
-    public function __construct(protected PendingRequest $client)
-    {
-        $this->state = new AnthropicStreamState;
-    }
-
     /**
      * @return Generator<StreamEvent>
      */
@@ -62,33 +51,74 @@ class Stream
         yield from $this->processStream($response, $request);
     }
 
+    protected function providerName(): string
+    {
+        return 'anthropic';
+    }
+
+    protected function createState(): StreamState
+    {
+        return new AnthropicStreamState;
+    }
+
+    protected function anthropicState(): AnthropicStreamState
+    {
+        if (! $this->state instanceof AnthropicStreamState) {
+            throw new \LogicException('Expected AnthropicStreamState.');
+        }
+
+        return $this->state;
+    }
+
+    /**
+     * Anthropic uses event+data SSE format.
+     *
+     * @return array<string, mixed>|null
+     */
+    protected function parseNextChunk(StreamInterface $stream): ?array
+    {
+        $line = $this->readLine($stream);
+        $line = trim($line);
+
+        if ($line === '' || $line === '0') {
+            return null;
+        }
+
+        if (str_starts_with($line, 'event:')) {
+            return $this->parseEventChunk($line, $stream);
+        }
+
+        if (str_starts_with($line, 'data:')) {
+            return $this->parseDataChunk($line);
+        }
+
+        return null;
+    }
+
+    /**
+     * @param  array<string, mixed>  $data
+     * @return Generator<StreamEvent>
+     */
+    protected function processChunk(array $data, Request $request): Generator
+    {
+        $streamEvent = $this->processEvent($data);
+
+        if ($streamEvent instanceof Generator) {
+            foreach ($streamEvent as $event) {
+                yield $event;
+            }
+        } elseif ($streamEvent instanceof StreamEvent) {
+            yield $streamEvent;
+        }
+    }
+
     /**
      * @return Generator<StreamEvent>
      */
-    protected function processStream(Response $response, Request $request, int $depth = 0): Generator
+    protected function finalize(Request $request, int $depth): Generator
     {
-        while (! $response->getBody()->eof()) {
-            $event = $this->parseNextSSEEvent($response->getBody());
-
-            if ($event === null) {
-                continue;
-            }
-
-            $streamEvent = $this->processEvent($event);
-
-            if ($streamEvent instanceof Generator) {
-                foreach ($streamEvent as $event) {
-                    yield $event;
-                }
-            } elseif ($streamEvent instanceof StreamEvent) {
-                yield $streamEvent;
-            }
-        }
-
         if ($this->state->hasToolCalls()) {
-            foreach ($this->handleToolCalls($request, $depth) as $item) {
-                yield $item;
-            }
+            yield from $this->handleToolCalls($request, $depth);
 
             return;
         }
@@ -101,6 +131,21 @@ class Stream
 
         yield $this->emitStreamEndEvent();
     }
+
+    /**
+     * @return array<string, mixed>
+     */
+    protected function additionalStreamEndContent(): array
+    {
+        return [
+            'thinking' => $this->anthropicState()->thinkingSummaries() === [] ? null : implode('', $this->anthropicState()->thinkingSummaries()),
+            'thinking_signature' => $this->anthropicState()->currentThinkingSignature() === '' ? null : $this->anthropicState()->currentThinkingSignature(),
+        ];
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  Event processing (Anthropic-specific SSE events)
+    // ──────────────────────────────────────────────────────────
 
     /**
      * @param  array<string, mixed>  $event
@@ -116,7 +161,7 @@ class Stream
             'message_delta' => $this->handleMessageDelta($event),
             'message_stop' => $this->handleMessageStop($event),
             'error' => $this->handleError($event),
-            'ping' => null, // Ignore ping events
+            'ping' => null,
             default => null,
         };
     }
@@ -140,7 +185,6 @@ class Stream
             ));
         }
 
-        // Only emit StreamStartEvent once per streaming session
         if ($this->state->shouldEmitStreamStart()) {
             $this->state->markStreamStarted();
 
@@ -234,9 +278,7 @@ class Stream
      */
     protected function handleMessageDelta(array $event): null
     {
-        // Update usage with final data from message_delta
         $usageData = $event['usage'] ?? [];
-        // Update completion tokens if provided
         if (! empty($usageData) && $this->state->usage() instanceof Usage && isset($usageData['output_tokens'])) {
             $currentUsage = $this->state->usage();
             $this->state->withUsage(new Usage(
@@ -253,28 +295,13 @@ class Stream
     /**
      * @param  array<string, mixed>  $event
      */
-    protected function handleMessageStop(array $event): ?StreamEndEvent
+    protected function handleMessageStop(array $event): null
     {
         if (! $this->state->finishReason() instanceof FinishReason) {
             $this->state->withFinishReason(FinishReason::Stop);
         }
 
         return null;
-    }
-
-    protected function emitStreamEndEvent(): StreamEndEvent
-    {
-        return new StreamEndEvent(
-            id: EventID::generate(),
-            timestamp: time(),
-            finishReason: $this->state->finishReason() ?? FinishReason::Stop,
-            usage: $this->state->usage(),
-            citations: $this->state->citations() !== [] ? $this->state->citations() : null,
-            additionalContent: [
-                'thinking' => $this->state->thinkingSummaries() === [] ? null : implode('', $this->state->thinkingSummaries()),
-                'thinking_signature' => $this->state->currentThinkingSignature() === '' ? null : $this->state->currentThinkingSignature(),
-            ]
-        );
     }
 
     /**
@@ -345,16 +372,13 @@ class Stream
             return null;
         }
 
-        // Map citation data using CitationsMapper
         $citation = CitationsMapper::mapCitationFromAnthropic($citationData);
 
-        // Create MessagePartWithCitations for aggregation
         $messagePartWithCitations = new MessagePartWithCitations(
             outputText: $this->state->currentText(),
             citations: [$citation]
         );
 
-        // Store for later aggregation
         $this->state->addCitation($messagePartWithCitations);
 
         return new CitationEvent(
@@ -392,7 +416,7 @@ class Stream
      */
     protected function handleSignatureDelta(array $delta): null
     {
-        $this->state->appendThinkingSignature($delta['signature'] ?? '');
+        $this->anthropicState()->appendThinkingSignature($delta['signature'] ?? '');
 
         return null;
     }
@@ -445,31 +469,31 @@ class Stream
         }
 
         $toolCall = $this->state->toolCalls()[$this->state->currentBlockIndex()];
-        $input = $toolCall['input'];
-
-        // Parse the JSON input
-        if (is_string($input) && json_validate($input)) {
-            $input = json_decode($input, true);
-        } elseif (is_string($input) && $input !== '') {
-            // If it's not valid JSON but not empty, wrap in array
-            $input = ['input' => $input];
-        } else {
-            $input = [];
-        }
-
-        $toolCallObj = new ToolCall(
-            id: $toolCall['id'],
-            name: $toolCall['name'],
-            arguments: $input,
-            reasoningId: $this->state->reasoningId() !== '' ? $this->state->reasoningId() : null
-        );
 
         return new ToolCallEvent(
             id: EventID::generate(),
             timestamp: time(),
-            toolCall: $toolCallObj,
+            toolCall: new ToolCall(
+                id: $toolCall['id'],
+                name: $toolCall['name'],
+                arguments: $this->parseToolInput($toolCall['input']),
+                reasoningId: $this->state->reasoningId() !== '' ? $this->state->reasoningId() : null
+            ),
             messageId: $this->state->messageId()
         );
+    }
+
+    /**
+     * @param  array<int, array<string, mixed>>  $toolCalls
+     * @return ToolCall[]
+     */
+    protected function mapToolCalls(array $toolCalls): array
+    {
+        return array_map(fn (array $toolCallData): ToolCall => new ToolCall(
+            id: $toolCallData['id'],
+            name: $toolCallData['name'],
+            arguments: $this->parseToolInput($toolCallData['input']),
+        ), $toolCalls);
     }
 
     /**
@@ -477,27 +501,12 @@ class Stream
      */
     protected function handleToolCalls(Request $request, int $depth): Generator
     {
-        $toolCalls = [];
+        $toolCalls = array_map(fn (array $toolCallData): ToolCall => new ToolCall(
+            id: $toolCallData['id'],
+            name: $toolCallData['name'],
+            arguments: $this->parseToolInput($toolCallData['input']),
+        ), $this->state->toolCalls());
 
-        // Convert tool calls to ToolCall objects
-        foreach ($this->state->toolCalls() as $toolCallData) {
-            $input = $toolCallData['input'];
-            if (is_string($input) && json_validate($input)) {
-                $input = json_decode($input, true);
-            } elseif (is_string($input) && $input !== '') {
-                $input = ['input' => $input];
-            } else {
-                $input = [];
-            }
-
-            $toolCalls[] = new ToolCall(
-                id: $toolCallData['id'],
-                name: $toolCallData['name'],
-                arguments: $input
-            );
-        }
-
-        // Execute tools and emit results
         $toolResults = [];
         $hasPendingToolCalls = false;
         yield from $this->callToolsAndYieldEvents($request->tools(), $toolCalls, $this->state->messageId(), $toolResults, $hasPendingToolCalls);
@@ -509,9 +518,7 @@ class Stream
             return;
         }
 
-        // Add messages to request for next turn
         if ($toolResults !== []) {
-            // Emit step finish after tool calls
             $this->state->markStepFinished();
             yield new StepFinishEvent(
                 id: EventID::generate(),
@@ -523,14 +530,13 @@ class Stream
                 toolCalls: $toolCalls,
                 additionalContent: in_array($this->state->currentThinking(), ['', '0'], true) ? [] : [
                     'thinking' => $this->state->currentThinking(),
-                    'thinking_signature' => $this->state->currentThinkingSignature(),
+                    'thinking_signature' => $this->anthropicState()->currentThinkingSignature(),
                 ]
             ));
 
             $request->addMessage(new ToolResultMessage($toolResults));
             $request->resetToolChoice();
 
-            // Continue streaming if within step limit
             $depth++;
             if ($depth < $request->maxSteps()) {
                 $this->state->reset();
@@ -543,12 +549,32 @@ class Stream
     }
 
     /**
+     * @return array<string, mixed>
+     */
+    protected function parseToolInput(mixed $input): array
+    {
+        if (is_string($input) && json_validate($input)) {
+            return json_decode($input, true);
+        }
+
+        if (is_string($input) && $input !== '') {
+            return ['input' => $input];
+        }
+
+        return [];
+    }
+
+    // ──────────────────────────────────────────────────────────
+    //  Provider tool handling
+    // ──────────────────────────────────────────────────────────
+
+    /**
      * @param  array<string, mixed>  $contentBlock
      */
     protected function handleProviderToolUseStart(array $contentBlock): ProviderToolEvent
     {
         if ($this->state->currentBlockIndex() !== null) {
-            $this->state->addProviderToolCall($this->state->currentBlockIndex(), [
+            $this->anthropicState()->addProviderToolCall($this->state->currentBlockIndex(), [
                 'type' => $contentBlock['type'] ?? 'server_tool_use',
                 'id' => $contentBlock['id'] ?? EventID::generate(),
                 'name' => $contentBlock['name'] ?? 'unknown',
@@ -573,8 +599,8 @@ class Stream
     {
         $partialJson = $delta['partial_json'] ?? '';
 
-        if ($this->state->currentBlockIndex() !== null && isset($this->state->providerToolCalls()[$this->state->currentBlockIndex()])) {
-            $this->state->appendProviderToolCallInput($this->state->currentBlockIndex(), $partialJson);
+        if ($this->state->currentBlockIndex() !== null && isset($this->anthropicState()->providerToolCalls()[$this->state->currentBlockIndex()])) {
+            $this->anthropicState()->appendProviderToolCallInput($this->state->currentBlockIndex(), $partialJson);
         }
 
         return null;
@@ -582,11 +608,11 @@ class Stream
 
     protected function handleProviderToolUseComplete(): ?ProviderToolEvent
     {
-        if ($this->state->currentBlockIndex() === null || ! isset($this->state->providerToolCalls()[$this->state->currentBlockIndex()])) {
+        if ($this->state->currentBlockIndex() === null || ! isset($this->anthropicState()->providerToolCalls()[$this->state->currentBlockIndex()])) {
             return null;
         }
 
-        $providerToolCall = $this->state->providerToolCalls()[$this->state->currentBlockIndex()];
+        $providerToolCall = $this->anthropicState()->providerToolCalls()[$this->state->currentBlockIndex()];
 
         return new ProviderToolEvent(
             id: EventID::generate(),
@@ -604,7 +630,7 @@ class Stream
     protected function handleProviderToolResultStart(array $contentBlock): ?ProviderToolEvent
     {
         if ($this->state->currentBlockIndex() !== null) {
-            $this->state->addProviderToolResult($this->state->currentBlockIndex(), $contentBlock);
+            $this->anthropicState()->addProviderToolResult($this->state->currentBlockIndex(), $contentBlock);
         }
 
         return new ProviderToolEvent(
@@ -617,28 +643,9 @@ class Stream
         );
     }
 
-    /**
-     * @return array<string, mixed>|null
-     */
-    protected function parseNextSSEEvent(StreamInterface $stream): ?array
-    {
-        $line = $this->readLine($stream);
-        $line = trim($line);
-
-        if ($line === '' || $line === '0') {
-            return null;
-        }
-
-        if (str_starts_with($line, 'event:')) {
-            return $this->parseEventChunk($line, $stream);
-        }
-
-        if (str_starts_with($line, 'data:')) {
-            return $this->parseDataChunk($line);
-        }
-
-        return null;
-    }
+    // ──────────────────────────────────────────────────────────
+    //  SSE parsing helpers
+    // ──────────────────────────────────────────────────────────
 
     /**
      * @return array<string, mixed>|null
@@ -699,27 +706,6 @@ class Stream
         } catch (Throwable $e) {
             throw new PrismStreamDecodeException('Anthropic', $e);
         }
-    }
-
-    protected function readLine(StreamInterface $stream): string
-    {
-        $buffer = '';
-
-        while (! $stream->eof()) {
-            $byte = $stream->read(1);
-
-            if ($byte === '') {
-                return $buffer;
-            }
-
-            $buffer .= $byte;
-
-            if ($byte === "\n") {
-                break;
-            }
-        }
-
-        return $buffer;
     }
 
     protected function sendRequest(Request $request): Response
