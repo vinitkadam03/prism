@@ -113,8 +113,9 @@ it('can generate text using tools with streaming', function (): void {
     expect($events)->not->toBeEmpty();
     expect($text)->not->toBeEmpty();
 
-    expect($toolCallEvents)->toHaveCount(2);
-    expect($toolResultEvents)->toHaveCount(2);
+    // 3 tool calls total: 2 from first turn + 1 from second turn
+    expect($toolCallEvents)->toHaveCount(3);
+    expect($toolResultEvents)->toHaveCount(3);
 
     // For the basic tools test, validate completion state
     expect($finishReasonFound)->toBeTrue();

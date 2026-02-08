@@ -5,51 +5,111 @@ declare(strict_types=1);
 namespace Prism\Prism\Providers\Ollama\Handlers;
 
 use Generator;
+use Illuminate\Http\Client\PendingRequest;
 use Illuminate\Http\Client\Response;
 use Illuminate\Support\Arr;
 use Prism\Prism\Enums\FinishReason;
 use Prism\Prism\Exceptions\PrismStreamDecodeException;
-use Prism\Prism\Providers\Ollama\Concerns\MapsFinishReason;
+use Prism\Prism\Providers\Concerns\ParsesSSE;
 use Prism\Prism\Providers\Ollama\Maps\MessageMap;
 use Prism\Prism\Providers\Ollama\Maps\ToolMap;
-use Prism\Prism\Providers\Ollama\ValueObjects\OllamaStreamState;
-use Prism\Prism\Providers\StreamHandler;
+use Prism\Prism\Providers\StreamParser;
 use Prism\Prism\Streaming\EventID;
-use Prism\Prism\Streaming\Events\StreamEndEvent;
 use Prism\Prism\Streaming\Events\StreamEvent;
-use Prism\Prism\Streaming\StreamState;
+use Prism\Prism\Streaming\Events\TextDeltaEvent;
+use Prism\Prism\Streaming\Events\ThinkingEvent;
+use Prism\Prism\Streaming\Events\ToolCallEvent;
+use Prism\Prism\Streaming\TurnResult;
 use Prism\Prism\Text\Request;
 use Prism\Prism\ValueObjects\ToolCall;
 use Prism\Prism\ValueObjects\Usage;
 use Psr\Http\Message\StreamInterface;
 use Throwable;
 
-class Stream extends StreamHandler
+class Stream implements StreamParser
 {
-    use MapsFinishReason;
+    use ParsesSSE;
 
-    protected function providerName(): string
+    public function __construct(protected PendingRequest $client) {}
+
+    public function providerName(): string
     {
         return 'ollama';
     }
 
-    protected function createState(): StreamState
+    /**
+     * @return Generator<int, StreamEvent, mixed, TurnResult>
+     */
+    public function parse(Request $request): Generator
     {
-        return new OllamaStreamState;
-    }
+        $response = $this->sendRequest($request);
+        $stream = $response->getBody();
 
-    protected function ollamaState(): OllamaStreamState
-    {
-        if (! $this->state instanceof OllamaStreamState) {
-            throw new \LogicException('Expected OllamaStreamState.');
+        $messageId = EventID::generate();
+        $reasoningId = null;
+        $promptTokens = 0;
+        $completionTokens = 0;
+        $finishReason = FinishReason::Stop;
+
+        while (! $stream->eof()) {
+            $data = $this->parseNextChunk($stream);
+
+            if ($data === null) {
+                continue;
+            }
+
+            $promptTokens += (int) data_get($data, 'prompt_eval_count', 0);
+            $completionTokens += (int) data_get($data, 'eval_count', 0);
+
+            $thinking = data_get($data, 'message.thinking', '');
+            if ($thinking !== '') {
+                $reasoningId ??= EventID::generate();
+
+                yield new ThinkingEvent(
+                    id: EventID::generate(),
+                    timestamp: time(),
+                    delta: $thinking,
+                    reasoningId: $reasoningId,
+                );
+
+                continue;
+            }
+
+            if ($this->hasToolCalls($data)) {
+                foreach ($this->extractToolCalls($data) as $toolCall) {
+                    yield new ToolCallEvent(
+                        id: EventID::generate(),
+                        timestamp: time(),
+                        toolCall: $toolCall,
+                        messageId: $messageId,
+                    );
+                }
+
+                $finishReason = FinishReason::ToolCalls;
+            }
+
+            $content = data_get($data, 'message.content', '');
+            if ($content !== '') {
+                yield new TextDeltaEvent(
+                    id: EventID::generate(),
+                    timestamp: time(),
+                    delta: $content,
+                    messageId: $messageId,
+                );
+            }
         }
 
-        return $this->state;
+        return new TurnResult(
+            finishReason: $finishReason,
+            usage: new Usage(
+                promptTokens: $promptTokens,
+                completionTokens: $completionTokens,
+            ),
+            model: $request->model(),
+        );
     }
 
     /**
-     * Ollama uses JSON lines (no SSE).
-     *
      * @return array<string, mixed>|null
      */
     protected function parseNextChunk(StreamInterface $stream): ?array
@@ -69,111 +129,6 @@ class Stream extends StreamHandler
 
     /**
      * @param  array<string, mixed>  $data
-     * @return Generator<StreamEvent>
-     */
-    protected function processChunk(array $data, Request $request): Generator
-    {
-        yield from $this->yieldStreamStartIfNeeded($request->model());
-        yield from $this->yieldStepStartIfNeeded();
-
-        // Accumulate token counts
-        $this->ollamaState()->addPromptTokens((int) data_get($data, 'prompt_eval_count', 0));
-        $this->ollamaState()->addCompletionTokens((int) data_get($data, 'eval_count', 0));
-
-        // Handle thinking content first
-        $thinking = data_get($data, 'message.thinking', '');
-        if ($thinking !== '') {
-            yield from $this->yieldThinkingDelta($thinking);
-
-            return;
-        }
-
-        // If we were emitting thinking and it's now stopped, mark it complete
-        if ($this->state->hasThinkingStarted()) {
-            yield from $this->yieldThinkingCompleteIfNeeded();
-        }
-
-        // Accumulate tool calls if present (don't emit events yet)
-        if ($this->hasToolCalls($data)) {
-            $toolCalls = $this->extractToolCalls($data, $this->state->toolCalls());
-            foreach ($toolCalls as $index => $toolCall) {
-                $this->state->addToolCall($index, $toolCall);
-            }
-        }
-
-        // Handle text content
-        $content = data_get($data, 'message.content', '');
-        if ($content !== '') {
-            yield from $this->yieldTextDelta($content);
-        }
-
-        // Handle tool call completion when stream is done
-        if ((bool) data_get($data, 'done', false) && $this->state->hasToolCalls()) {
-            yield from $this->yieldTextCompleteIfNeeded();
-
-            // Signal to finalize that tool calls are ready
-            return;
-        }
-
-        // Handle regular completion (no tool calls)
-        if ((bool) data_get($data, 'done', false)) {
-            yield from $this->yieldTextCompleteIfNeeded();
-            yield from $this->yieldStepFinish();
-            yield $this->emitStreamEndEvent();
-        }
-    }
-
-    /**
-     * Override finalize: Ollama's completion is handled in processChunk (on 'done' flag).
-     * If we get here without tool calls, the stream ended naturally within processChunk.
-     * If we get here with tool calls, the tool calls need to be processed.
-     *
-     * @return Generator<StreamEvent>
-     */
-    protected function finalize(Request $request, int $depth): Generator
-    {
-        if ($this->state->hasToolCalls()) {
-            yield from $this->processToolCallResults(
-                $request,
-                $this->state->currentText(),
-                $this->mapToolCalls($this->state->toolCalls()),
-                $depth,
-            );
-        }
-
-        // Normal completion is handled in processChunk's 'done' path
-    }
-
-    /**
-     * Override to use Ollama-specific usage.
-     */
-    protected function emitStreamEndEvent(): StreamEndEvent
-    {
-        return new StreamEndEvent(
-            id: EventID::generate(),
-            timestamp: time(),
-            finishReason: FinishReason::Stop,
-            usage: new Usage(
-                promptTokens: $this->ollamaState()->promptTokens(),
-                completionTokens: $this->ollamaState()->completionTokens()
-            )
-        );
-    }
-
-    /**
-     * Override to reset Ollama state on next turn.
-     */
-    protected function resetStateForNextTurn(): void
-    {
-        $this->state->reset();
-    }
-
-    // ──────────────────────────────────────────────────────────
-    //  Ollama data extraction
-    // ──────────────────────────────────────────────────────────
-
-    /**
-     * @param  array<string, mixed>  $data
      */
     protected function hasToolCalls(array $data): bool
     {
@@ -182,38 +137,24 @@ class Stream extends StreamHandler
 
     /**
      * @param  array<string, mixed>  $data
-     * @param  array<int, array<string, mixed>>  $toolCalls
-     * @return array<int, array<string, mixed>>
+     * @return ToolCall[]
      */
-    protected function extractToolCalls(array $data, array $toolCalls): array
+    protected function extractToolCalls(array $data): array
     {
-        foreach (data_get($data, 'message.tool_calls', []) as $index => $toolCall) {
-            if ($name = data_get($toolCall, 'function.name')) {
-                $toolCalls[$index]['name'] = $name;
-                $toolCalls[$index]['arguments'] = '';
-                $toolCalls[$index]['id'] = data_get($toolCall, 'id');
-            }
+        $toolCalls = [];
 
-            if ($arguments = data_get($toolCall, 'function.arguments')) {
-                $argumentValue = is_array($arguments) ? json_encode($arguments) : $arguments;
-                $toolCalls[$index]['arguments'] .= $argumentValue;
-            }
+        foreach (data_get($data, 'message.tool_calls', []) as $toolCall) {
+            $arguments = data_get($toolCall, 'function.arguments');
+            $argumentValue = is_array($arguments) ? json_encode($arguments) : ($arguments ?? '');
+
+            $toolCalls[] = new ToolCall(
+                id: data_get($toolCall, 'id') ?? '',
+                name: data_get($toolCall, 'function.name') ?? '',
+                arguments: $argumentValue,
+            );
         }
 
         return $toolCalls;
-    }
-
-    /**
-     * @param  array<int, array<string, mixed>>  $toolCalls
-     * @return ToolCall[]
-     */
-    protected function mapToolCalls(array $toolCalls): array
-    {
-        return array_map(fn (array $toolCall): ToolCall => new ToolCall(
-            id: data_get($toolCall, 'id') ?? '',
-            name: data_get($toolCall, 'name') ?? '',
-            arguments: data_get($toolCall, 'arguments'),
-        ), $toolCalls);
     }
 
     protected function sendRequest(Request $request): Response

@@ -26,6 +26,7 @@ use Prism\Prism\Providers\Mistral\Handlers\Structured;
 use Prism\Prism\Providers\Mistral\Handlers\Text;
 use Prism\Prism\Providers\Mistral\ValueObjects\OCRResponse;
 use Prism\Prism\Providers\Provider;
+use Prism\Prism\Providers\StreamHandler;
 use Prism\Prism\Structured\Request as StructuredRequest;
 use Prism\Prism\Structured\Response as StructuredResponse;
 use Prism\Prism\Text\Request as TextRequest;
@@ -101,12 +102,12 @@ class Mistral extends Provider
     #[\Override]
     public function stream(TextRequest $request): Generator
     {
-        $handler = new Stream(
+        $provider = new Stream(
             $this->client($request->clientOptions(), $request->clientRetry()),
             $this->apiKey
         );
 
-        return $handler->handle($request);
+        return (new StreamHandler)->handle($provider, $request);
     }
 
     #[\Override]

@@ -11,6 +11,7 @@ use Prism\Prism\Concerns\InitializesClient;
 use Prism\Prism\Exceptions\PrismException;
 use Prism\Prism\Exceptions\PrismRateLimitedException;
 use Prism\Prism\Providers\Provider;
+use Prism\Prism\Providers\StreamHandler;
 use Prism\Prism\Providers\XAI\Handlers\Stream;
 use Prism\Prism\Providers\XAI\Handlers\Structured;
 use Prism\Prism\Providers\XAI\Handlers\Text;
@@ -39,12 +40,12 @@ class XAI extends Provider
     #[\Override]
     public function stream(TextRequest $request): Generator
     {
-        $handler = new Stream($this->client(
+        $provider = new Stream($this->client(
             $request->clientOptions(),
             $request->clientRetry()
         ));
 
-        return $handler->handle($request);
+        return (new StreamHandler)->handle($provider, $request);
     }
 
     #[\Override]

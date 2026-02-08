@@ -4,50 +4,24 @@ declare(strict_types=1);
 
 namespace Prism\Prism\Providers\OpenRouter\Handlers;
 
-use Generator;
 use Illuminate\Http\Client\Response;
-use Prism\Prism\Providers\ChatCompletionsStreamHandler;
+use Prism\Prism\Providers\ChatCompletionsStreamParser;
 use Prism\Prism\Providers\OpenRouter\Concerns\BuildsRequestOptions;
 use Prism\Prism\Providers\OpenRouter\Concerns\MapsFinishReason;
 use Prism\Prism\Providers\OpenRouter\Concerns\ValidatesResponses;
 use Prism\Prism\Providers\OpenRouter\Maps\MessageMap;
-use Prism\Prism\Streaming\Events\StreamEvent;
 use Prism\Prism\Text\Request;
 use Prism\Prism\ValueObjects\ToolCall;
 use Prism\Prism\ValueObjects\Usage;
 use Throwable;
 
-class Stream extends ChatCompletionsStreamHandler
+class Stream extends ChatCompletionsStreamParser
 {
     use BuildsRequestOptions, MapsFinishReason, ValidatesResponses;
 
-    protected function providerName(): string
+    public function providerName(): string
     {
         return 'openrouter';
-    }
-
-    /**
-     * Override to extract usage from chunks without finish_reason.
-     *
-     * OpenRouter may send usage in a separate final chunk (when stream_options.include_usage=true).
-     * The parent already handles usage extraction on finish_reason chunks, so we only extract
-     * from chunks without finish_reason to avoid double-counting.
-     *
-     * @param  array<string, mixed>  $data
-     * @return Generator<StreamEvent>
-     */
-    protected function processChunk(array $data, Request $request): Generator
-    {
-        $rawFinishReason = data_get($data, 'choices.0.finish_reason');
-
-        if ($rawFinishReason === null) {
-            $usage = $this->extractUsage($data);
-            if ($usage instanceof Usage) {
-                $this->state->addUsage($usage);
-            }
-        }
-
-        yield from parent::processChunk($data, $request);
     }
 
     /**

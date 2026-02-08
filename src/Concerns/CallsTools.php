@@ -9,14 +9,10 @@ use Illuminate\Support\Facades\Concurrency;
 use Illuminate\Support\ItemNotFoundException;
 use Illuminate\Support\MultipleItemsFoundException;
 use JsonException;
-use Prism\Prism\Enums\FinishReason;
 use Prism\Prism\Exceptions\PrismException;
 use Prism\Prism\Streaming\EventID;
 use Prism\Prism\Streaming\Events\ArtifactEvent;
-use Prism\Prism\Streaming\Events\StepFinishEvent;
-use Prism\Prism\Streaming\Events\StreamEndEvent;
 use Prism\Prism\Streaming\Events\ToolResultEvent;
-use Prism\Prism\Streaming\StreamState;
 use Prism\Prism\Tool;
 use Prism\Prism\ValueObjects\ToolCall;
 use Prism\Prism\ValueObjects\ToolOutput;
@@ -235,27 +231,6 @@ trait CallsTools
                 'events' => $events,
             ];
         }
-    }
-
-    /**
-     * Yield stream completion events when client-executed tools are pending.
-     *
-     * @return Generator<StepFinishEvent|StreamEndEvent>
-     */
-    protected function yieldToolCallsFinishEvents(StreamState $state): Generator
-    {
-        yield new StepFinishEvent(
-            id: EventID::generate(),
-            timestamp: time()
-        );
-
-        yield new StreamEndEvent(
-            id: EventID::generate(),
-            timestamp: time(),
-            finishReason: FinishReason::ToolCalls,
-            usage: $state->usage(),
-            citations: $state->citations(),
-        );
     }
 
     /**

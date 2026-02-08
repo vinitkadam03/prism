@@ -6,7 +6,7 @@ namespace Prism\Prism\Providers\XAI\Handlers;
 
 use Illuminate\Http\Client\Response;
 use Illuminate\Support\Arr;
-use Prism\Prism\Providers\ChatCompletionsStreamHandler;
+use Prism\Prism\Providers\ChatCompletionsStreamParser;
 use Prism\Prism\Providers\XAI\Concerns\ExtractsThinking;
 use Prism\Prism\Providers\XAI\Concerns\MapsFinishReason;
 use Prism\Prism\Providers\XAI\Concerns\ValidatesResponses;
@@ -17,11 +17,11 @@ use Prism\Prism\Text\Request;
 use Prism\Prism\ValueObjects\ToolCall;
 use Prism\Prism\ValueObjects\Usage;
 
-class Stream extends ChatCompletionsStreamHandler
+class Stream extends ChatCompletionsStreamParser
 {
     use ExtractsThinking, MapsFinishReason, ValidatesResponses;
 
-    protected function providerName(): string
+    public function providerName(): string
     {
         return 'xai';
     }

@@ -190,8 +190,9 @@ it('can generate text stream using tools ', function (): void {
 
     $lastEvent = end($events);
     expect($lastEvent)->toBeInstanceOf(StreamEndEvent::class);
-    expect($lastEvent->usage->promptTokens)->toBe(278);
-    expect($lastEvent->usage->completionTokens)->toBe(44);
+    // Usage is accumulated across both turns (tool call turn + final response turn)
+    expect($lastEvent->usage->promptTokens)->toBe(409);
+    expect($lastEvent->usage->completionTokens)->toBe(59);
 
     // Verify the HTTP request
     Http::assertSent(fn (Request $request): bool => str_contains($request->url(), 'streamGenerateContent?alt=sse')

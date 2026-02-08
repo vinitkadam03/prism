@@ -11,7 +11,7 @@ use Illuminate\Support\Arr;
 use Prism\Prism\Enums\FinishReason;
 use Prism\Prism\Exceptions\PrismException;
 use Prism\Prism\Exceptions\PrismRateLimitedException;
-use Prism\Prism\Providers\ChatCompletionsStreamHandler;
+use Prism\Prism\Providers\ChatCompletionsStreamParser;
 use Prism\Prism\Providers\Groq\Concerns\ProcessRateLimits;
 use Prism\Prism\Providers\Groq\Concerns\ValidateResponse;
 use Prism\Prism\Providers\Groq\Maps\FinishReasonMap;
@@ -26,32 +26,13 @@ use Prism\Prism\ValueObjects\ToolCall;
 use Prism\Prism\ValueObjects\Usage;
 use Throwable;
 
-class Stream extends ChatCompletionsStreamHandler
+class Stream extends ChatCompletionsStreamParser
 {
     use ProcessRateLimits, ValidateResponse;
 
-    protected function providerName(): string
+    public function providerName(): string
     {
         return 'groq';
-    }
-
-    /**
-     * Override processChunk to add error handling before standard processing.
-     *
-     * @param  array<string, mixed>  $data
-     * @return Generator<StreamEvent>
-     */
-    protected function processChunk(array $data, Request $request): Generator
-    {
-        if ($this->hasError($data)) {
-            yield from $this->yieldStreamStartIfNeeded($request->model());
-            yield from $this->yieldStepStartIfNeeded();
-            yield from $this->handleErrors($data, $request);
-
-            return;
-        }
-
-        yield from parent::processChunk($data, $request);
     }
 
     /**
@@ -189,7 +170,7 @@ class Stream extends ChatCompletionsStreamHandler
      * @param  array<string, mixed>  $data
      * @return Generator<StreamEvent>
      */
-    protected function handleErrors(array $data, Request $request): Generator
+    protected function handleError(array $data, Request $request): Generator
     {
         $error = data_get($data, 'error', []);
         $type = data_get($error, 'type', 'unknown_error');

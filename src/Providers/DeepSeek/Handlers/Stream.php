@@ -6,7 +6,7 @@ namespace Prism\Prism\Providers\DeepSeek\Handlers;
 
 use Illuminate\Http\Client\Response;
 use Illuminate\Support\Arr;
-use Prism\Prism\Providers\ChatCompletionsStreamHandler;
+use Prism\Prism\Providers\ChatCompletionsStreamParser;
 use Prism\Prism\Providers\DeepSeek\Concerns\MapsFinishReason;
 use Prism\Prism\Providers\DeepSeek\Concerns\ValidatesResponses;
 use Prism\Prism\Providers\DeepSeek\Maps\MessageMap;
@@ -16,11 +16,11 @@ use Prism\Prism\Text\Request;
 use Prism\Prism\ValueObjects\ToolCall;
 use Prism\Prism\ValueObjects\Usage;
 
-class Stream extends ChatCompletionsStreamHandler
+class Stream extends ChatCompletionsStreamParser
 {
     use MapsFinishReason, ValidatesResponses;
 
-    protected function providerName(): string
+    public function providerName(): string
     {
         return 'deepseek';
     }

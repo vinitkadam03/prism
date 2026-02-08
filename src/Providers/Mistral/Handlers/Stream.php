@@ -4,25 +4,23 @@ declare(strict_types=1);
 
 namespace Prism\Prism\Providers\Mistral\Handlers;
 
-use Generator;
 use Illuminate\Http\Client\PendingRequest;
 use Illuminate\Http\Client\Response;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Str;
-use Prism\Prism\Providers\ChatCompletionsStreamHandler;
+use Prism\Prism\Providers\ChatCompletionsStreamParser;
 use Prism\Prism\Providers\Mistral\Concerns\MapsFinishReason;
 use Prism\Prism\Providers\Mistral\Concerns\ProcessRateLimits;
 use Prism\Prism\Providers\Mistral\Concerns\ValidatesResponse;
 use Prism\Prism\Providers\Mistral\Maps\MessageMap;
 use Prism\Prism\Providers\Mistral\Maps\ToolChoiceMap;
 use Prism\Prism\Providers\Mistral\Maps\ToolMap;
-use Prism\Prism\Streaming\Events\StreamEvent;
 use Prism\Prism\Text\Request;
 use Prism\Prism\ValueObjects\ToolCall;
 use Prism\Prism\ValueObjects\Usage;
 use Throwable;
 
-class Stream extends ChatCompletionsStreamHandler
+class Stream extends ChatCompletionsStreamParser
 {
     use MapsFinishReason, ProcessRateLimits, ValidatesResponse;
 
@@ -33,38 +31,12 @@ class Stream extends ChatCompletionsStreamHandler
         parent::__construct($client);
     }
 
-    protected function providerName(): string
+    public function providerName(): string
     {
         return 'mistral';
     }
 
     /**
-     * Override to extract usage from chunks without finish_reason.
-     *
-     * Mistral may send usage in every chunk or only in the final chunk.
-     * The parent already handles usage extraction on finish_reason chunks, so we only
-     * extract from chunks without finish_reason to avoid double-counting.
-     *
-     * @param  array<string, mixed>  $data
-     * @return Generator<StreamEvent>
-     */
-    protected function processChunk(array $data, Request $request): Generator
-    {
-        $rawFinishReason = data_get($data, 'choices.0.finish_reason');
-
-        if ($rawFinishReason === null) {
-            $usage = $this->extractUsage($data);
-            if ($usage instanceof Usage) {
-                $this->state->addUsage($usage);
-            }
-        }
-
-        yield from parent::processChunk($data, $request);
-    }
-
-    /**
-     * Extract thinking content from array-format content blocks.
-     *
      * @param  array<string, mixed>  $data
      */
     protected function extractThinkingDelta(array $data, Request $request): string
@@ -89,8 +61,6 @@ class Stream extends ChatCompletionsStreamHandler
     }
 
     /**
-     * Extract text content, handling both string and array formats.
-     *
      * @param  array<string, mixed>  $data
      */
     protected function extractContentDelta(array $data): string

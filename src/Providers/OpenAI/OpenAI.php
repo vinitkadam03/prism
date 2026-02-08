@@ -32,6 +32,7 @@ use Prism\Prism\Providers\OpenAI\Handlers\Stream;
 use Prism\Prism\Providers\OpenAI\Handlers\Structured;
 use Prism\Prism\Providers\OpenAI\Handlers\Text;
 use Prism\Prism\Providers\Provider;
+use Prism\Prism\Providers\StreamHandler;
 use Prism\Prism\Structured\Request as StructuredRequest;
 use Prism\Prism\Structured\Response as StructuredResponse;
 use Prism\Prism\Text\Request as TextRequest;
@@ -129,12 +130,12 @@ class OpenAI extends Provider
     #[\Override]
     public function stream(TextRequest $request): Generator
     {
-        $handler = new Stream($this->client(
+        $provider = new Stream($this->client(
             $request->clientOptions(),
             $request->clientRetry()
         ));
 
-        return $handler->handle($request);
+        return (new StreamHandler)->handle($provider, $request);
     }
 
     public function handleRequestException(string $model, RequestException $e): never

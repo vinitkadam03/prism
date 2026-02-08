@@ -5,293 +5,95 @@ declare(strict_types=1);
 namespace Prism\Prism\Providers;
 
 use Generator;
-use Throwable;
-use Illuminate\Support\Str;
-use Prism\Prism\Text\Request;
-use Prism\Prism\Streaming\EventID;
-use Prism\Prism\Enums\FinishReason;
 use Prism\Prism\Concerns\CallsTools;
-use Illuminate\Http\Client\Response;
-use Psr\Http\Message\StreamInterface;
-use Prism\Prism\Streaming\StreamState;
-use Prism\Prism\ValueObjects\ToolCall;
-use Illuminate\Http\Client\PendingRequest;
+use Prism\Prism\Enums\FinishReason;
 use Prism\Prism\Exceptions\PrismException;
-use Prism\Prism\Streaming\Events\StreamEvent;
-use Prism\Prism\Streaming\Events\ToolCallEvent;
-use Prism\Prism\Streaming\Events\ThinkingEvent;
+use Prism\Prism\Streaming\EventID;
+use Prism\Prism\Streaming\Events\CitationEvent;
+use Prism\Prism\Streaming\Events\StepFinishEvent;
 use Prism\Prism\Streaming\Events\StepStartEvent;
 use Prism\Prism\Streaming\Events\StreamEndEvent;
-use Prism\Prism\Streaming\Events\TextStartEvent;
-use Prism\Prism\Streaming\Events\TextDeltaEvent;
-use Prism\Prism\Streaming\Events\StepFinishEvent;
+use Prism\Prism\Streaming\Events\StreamEvent;
 use Prism\Prism\Streaming\Events\StreamStartEvent;
 use Prism\Prism\Streaming\Events\TextCompleteEvent;
-use Prism\Prism\Streaming\Events\ThinkingStartEvent;
-use Prism\Prism\Exceptions\PrismStreamDecodeException;
+use Prism\Prism\Streaming\Events\TextDeltaEvent;
+use Prism\Prism\Streaming\Events\TextStartEvent;
 use Prism\Prism\Streaming\Events\ThinkingCompleteEvent;
+use Prism\Prism\Streaming\Events\ThinkingEvent;
+use Prism\Prism\Streaming\Events\ThinkingStartEvent;
+use Prism\Prism\Streaming\Events\ToolCallEvent;
+use Prism\Prism\Streaming\StreamState;
+use Prism\Prism\Streaming\TurnResult;
+use Prism\Prism\Text\Request;
+use Prism\Prism\ValueObjects\MessagePartWithCitations;
 use Prism\Prism\ValueObjects\Messages\AssistantMessage;
 use Prism\Prism\ValueObjects\Messages\ToolResultMessage;
+use Prism\Prism\ValueObjects\ToolCall;
 
-abstract class StreamHandler
+class StreamHandler
 {
     use CallsTools;
 
     protected StreamState $state;
 
-    public function __construct(protected PendingRequest $client)
+    /** @var ToolCall[] */
+    protected array $toolCalls = [];
+
+    /** @var MessagePartWithCitations[] */
+    protected array $citations = [];
+
+    /**
+     * @return Generator<StreamEvent>
+     */
+    public function handle(StreamParser $provider, Request $request): Generator
     {
-        $this->state = $this->createState();
+        $this->state = new StreamState;
+        $this->state->withModel($request->model());
+
+        yield from $this->processTurn($provider, $request, depth: 0);
     }
 
     /**
      * @return Generator<StreamEvent>
      */
-    public function handle(Request $request): Generator
+    protected function processTurn(StreamParser $provider, Request $request, int $depth): Generator
     {
-        $response = $this->sendRequest($request);
+        $stream = $provider->parse($request);
 
-        yield from $this->processStream($response, $request);
-    }
-
-    /**
-     * The canonical streaming loop shared by all providers.
-     *
-     * @throws PrismException
-     */
-    protected function processStream(Response $response, Request $request, int $depth = 0): Generator
-    {
-        $this->beforeProcessing($depth);
-
-        while (! $response->getBody()->eof()) {
-            $data = $this->parseNextChunk($response->getBody());
-
-            if ($data === null) {
-                continue;
-            }
-
-            // Use foreach+yield instead of yield from to avoid generator key
-            // collisions. Sub-generators start keys from 0 and yield from
-            // propagates those keys, causing iterator_to_array (used by
-            // collect()) to overwrite events sharing the same integer key.
-            foreach ($this->processChunk($data, $request) as $event) {
-                yield $event;
+        foreach ($stream as $event) {
+            foreach ($this->processEvent($event, $provider) as $wrapped) {
+                yield $wrapped;
             }
         }
 
-        foreach ($this->finalize($request, $depth) as $event) {
+        /** @var TurnResult $result */
+        $result = $stream->getReturn();
+
+        if ($result->usage !== null) {
+            $this->state->addUsage($result->usage);
+        }
+
+        foreach ($this->completeTurn($provider, $request, $result, $depth) as $event) {
             yield $event;
         }
     }
 
     /**
-     * Emit completion events, or process tool calls and recurse.
-     *
-     * @return Generator<StreamEvent>
-     * @throws PrismException
-     */
-    protected function finalize(Request $request, int $depth): Generator
-    {
-        // Safety net: ensure lifecycle events are emitted even if processChunk
-        // didn't emit them (e.g. stream ended without explicit finish_reason).
-        // These helpers are idempotent -- they check state flags before emitting.
-        yield from $this->yieldTextCompleteIfNeeded();
-        yield from $this->yieldThinkingCompleteIfNeeded();
-
-        if ($this->state->hasToolCalls()) {
-            if ($depth >= $request->maxSteps()) {
-                throw new PrismException('Maximum tool call chain depth exceeded. Increase maxSteps to allow more tool call iterations.');
-            }
-
-            yield from $this->processToolCallResults(
-                $request,
-                $this->state->currentText(),
-                $this->mapToolCalls($this->state->toolCalls()),
-                $depth,
-            );
-
-            return;
-        }
-
-        $this->state->markStepFinished();
-        yield from $this->yieldStepFinish();
-        yield $this->emitStreamEndEvent();
-    }
-
-    /**
-     * Execute tools, yield results, and recurse into the next turn.
-     *
-     * @param  ToolCall[]  $mappedToolCalls
      * @return Generator<StreamEvent>
      */
-    protected function processToolCallResults(
-        Request $request,
-        string $text,
-        array $mappedToolCalls,
-        int $depth,
-    ): Generator {
-        foreach ($mappedToolCalls as $toolCall) {
-            yield new ToolCallEvent(
-                id: EventID::generate(),
-                timestamp: time(),
-                toolCall: $toolCall,
-                messageId: $this->state->messageId(),
-            );
-        }
-
-        $toolResults = [];
-        $hasPendingToolCalls = false;
-
-        yield from $this->callToolsAndYieldEvents(
-            $request->tools(),
-            $mappedToolCalls,
-            $this->state->messageId(),
-            $toolResults,
-            $hasPendingToolCalls,
-        );
-
-        // Client-executed tools are pending -- stop here.
-        if ($hasPendingToolCalls) {
-            $this->state->markStepFinished();
-            yield from $this->yieldToolCallsFinishEvents($this->state);
-
-            return;
-        }
-
-        yield from $this->yieldStepFinish();
-
-        // Prepare the conversation for the next turn.
-        $request->addMessage(new AssistantMessage(
-            content: $text,
-            toolCalls: $mappedToolCalls,
-            additionalContent: $this->toolCallAdditionalContent(),
-        ));
-        $request->addMessage(new ToolResultMessage($toolResults));
-        $request->resetToolChoice();
-
-        $depth++;
-
-        if ($depth < $request->maxSteps()) {
-            $this->resetStateForNextTurn();
-            $nextResponse = $this->sendRequest($request);
-            yield from $this->processStream($nextResponse, $request, $depth);
-        } else {
-            yield $this->emitStreamEndEvent();
-        }
-    }
-
-    // ──────────────────────────────────────────────────────────
-    //  Abstract methods — every provider must implement these
-    // ──────────────────────────────────────────────────────────
-
-    /**
-     * Parse the next chunk from the raw stream.
-     *
-     * @return array<string, mixed>|null
-     */
-    abstract protected function parseNextChunk(StreamInterface $stream): ?array;
-
-    /**
-     * Process a single parsed chunk, yielding stream events.
-     *
-     * @param  array<string, mixed>  $data
-     * @return Generator<StreamEvent>
-     */
-    abstract protected function processChunk(array $data, Request $request): Generator;
-
-    /**
-     * Build and send the HTTP request to the provider.
-     */
-    abstract protected function sendRequest(Request $request): Response;
-
-    /**
-     * The provider name used in StreamStartEvent.
-     */
-    abstract protected function providerName(): string;
-
-    // ──────────────────────────────────────────────────────────
-    //  Factory hooks — override as needed
-    // ──────────────────────────────────────────────────────────
-
-    /**
-     * Create the StreamState instance. Override for custom state classes.
-     */
-    protected function createState(): StreamState
+    protected function processEvent(StreamEvent $event, StreamParser $provider): Generator
     {
-        return new StreamState;
-    }
-
-    /**
-     * Called before processing begins. Resets state on depth 0.
-     */
-    protected function beforeProcessing(int $depth): void
-    {
-        if ($depth === 0) {
-            $this->state->reset();
-        }
-    }
-
-    /**
-     * Reset state between tool call turns.
-     * Uses reset() which clears tool calls, text, thinking, etc. but preserves
-     * streamStarted, usage, and finishReason.
-     */
-    protected function resetStateForNextTurn(): void
-    {
-        $this->state->reset();
-        $this->state->withMessageId(EventID::generate());
-    }
-
-    /**
-     * @return array<string, mixed>
-     */
-    protected function additionalStreamEndContent(): array
-    {
-        return [];
-    }
-
-    /**
-     * @return array<string, mixed>
-     */
-    protected function toolCallAdditionalContent(): array
-    {
-        return [];
-    }
-
-    /**
-     * @param  array<int, array<string, mixed>>  $toolCalls
-     * @return ToolCall[]
-     */
-    abstract protected function mapToolCalls(array $toolCalls): array;
-
-    // ──────────────────────────────────────────────────────────
-    //  Lifecycle events
-    // ──────────────────────────────────────────────────────────
-
-    /**
-     * @return Generator<StreamStartEvent>
-     */
-    protected function yieldStreamStartIfNeeded(string $model): Generator
-    {
-        if ($this->state->shouldEmitStreamStart()) {
-            $this->state
-                ->withMessageId(EventID::generate())
-                ->markStreamStarted();
+        if (! $this->state->hasStreamStarted()) {
+            $this->state->markStreamStarted();
 
             yield new StreamStartEvent(
                 id: EventID::generate(),
                 timestamp: time(),
-                model: $model,
-                provider: $this->providerName(),
+                model: $this->state->model(),
+                provider: $provider->providerName(),
             );
         }
-    }
 
-    /**
-     * @return Generator<StepStartEvent>
-     */
-    protected function yieldStepStartIfNeeded(): Generator
-    {
         if ($this->state->shouldEmitStepStart()) {
             $this->state->markStepStarted();
 
@@ -300,39 +102,99 @@ abstract class StreamHandler
                 timestamp: time(),
             );
         }
-    }
 
-    /**
-     * @return Generator<ThinkingStartEvent|ThinkingEvent>
-     */
-    protected function yieldThinkingDelta(string $delta): Generator
-    {
-        if ($this->state->shouldEmitThinkingStart()) {
-            $this->state
-                ->withReasoningId(EventID::generate())
-                ->markThinkingStarted();
+        if ($event instanceof ThinkingEvent) {
+            if ($this->state->shouldEmitThinkingStart()) {
+                $this->state
+                    ->withReasoningId($event->reasoningId)
+                    ->markThinkingStarted();
 
-            yield new ThinkingStartEvent(
-                id: EventID::generate(),
-                timestamp: time(),
-                reasoningId: $this->state->reasoningId(),
-            );
+                yield new ThinkingStartEvent(
+                    id: EventID::generate(),
+                    timestamp: time(),
+                    reasoningId: $event->reasoningId,
+                );
+            }
+
+            $this->state->appendThinking($event->delta);
+
+            yield $event;
+
+            return;
         }
 
-        $this->state->appendThinking($delta);
+        if ($event instanceof TextDeltaEvent) {
+            if ($this->state->hasThinkingStarted()) {
+                $this->state->markThinkingCompleted();
 
-        yield new ThinkingEvent(
-            id: EventID::generate(),
-            timestamp: time(),
-            delta: $delta,
-            reasoningId: $this->state->reasoningId(),
-        );
+                yield new ThinkingCompleteEvent(
+                    id: EventID::generate(),
+                    timestamp: time(),
+                    reasoningId: $this->state->reasoningId(),
+                );
+            }
+
+            // Detect output item boundary (messageId changed)
+            if ($this->state->hasTextStarted() && $event->messageId !== $this->state->messageId()) {
+                $this->state->markTextCompleted();
+
+                yield new TextCompleteEvent(
+                    id: EventID::generate(),
+                    timestamp: time(),
+                    messageId: $this->state->messageId(),
+                );
+
+                $this->state->withMessageId($event->messageId);
+                $this->state->markTextStarted();
+
+                yield new TextStartEvent(
+                    id: EventID::generate(),
+                    timestamp: time(),
+                    messageId: $event->messageId,
+                );
+            } elseif ($this->state->shouldEmitTextStart()) {
+                $this->captureMessageId($event->messageId);
+                $this->state->markTextStarted();
+
+                yield new TextStartEvent(
+                    id: EventID::generate(),
+                    timestamp: time(),
+                    messageId: $this->state->messageId(),
+                );
+            }
+
+            $this->state->appendText($event->delta);
+
+            yield $event;
+
+            return;
+        }
+
+        if ($event instanceof ToolCallEvent) {
+            $this->captureMessageId($event->messageId);
+            $this->toolCalls[] = $event->toolCall;
+            yield $event;
+
+            return;
+        }
+
+        if ($event instanceof CitationEvent) {
+            $this->citations[] = new MessagePartWithCitations(
+                outputText: $this->state->currentText(),
+                citations: [$event->citation],
+            );
+            yield $event;
+
+            return;
+        }
+
+        yield $event;
     }
 
     /**
-     * @return Generator<ThinkingCompleteEvent>
+     * @return Generator<StreamEvent>
      */
-    protected function yieldThinkingCompleteIfNeeded(): Generator
+    protected function completeTurn(StreamParser $provider, Request $request, TurnResult $result, int $depth): Generator
     {
         if ($this->state->hasThinkingStarted()) {
             $this->state->markThinkingCompleted();
@@ -343,38 +205,7 @@ abstract class StreamHandler
                 reasoningId: $this->state->reasoningId(),
             );
         }
-    }
 
-    /**
-     * @return Generator<TextStartEvent|TextDeltaEvent>
-     */
-    protected function yieldTextDelta(string $delta): Generator
-    {
-        if ($this->state->shouldEmitTextStart()) {
-            $this->state->markTextStarted();
-
-            yield new TextStartEvent(
-                id: EventID::generate(),
-                timestamp: time(),
-                messageId: $this->state->messageId(),
-            );
-        }
-
-        $this->state->appendText($delta);
-
-        yield new TextDeltaEvent(
-            id: EventID::generate(),
-            timestamp: time(),
-            delta: $delta,
-            messageId: $this->state->messageId(),
-        );
-    }
-
-    /**
-     * @return Generator<TextCompleteEvent>
-     */
-    protected function yieldTextCompleteIfNeeded(): Generator
-    {
         if ($this->state->hasTextStarted()) {
             $this->state->markTextCompleted();
 
@@ -384,86 +215,115 @@ abstract class StreamHandler
                 messageId: $this->state->messageId(),
             );
         }
-    }
 
-    /**
-     * @return Generator<StepFinishEvent>
-     */
-    protected function yieldStepFinish(): Generator
-    {
+        if ($this->toolCalls !== []) {
+            if ($depth >= $request->maxSteps()) {
+                throw new PrismException('Maximum tool call chain depth exceeded. Increase maxSteps to allow more tool call iterations.');
+            }
+
+            foreach ($this->handleToolCalls($provider, $request, $result, $depth) as $event) {
+                yield $event;
+            }
+
+            return;
+        }
+
         $this->state->markStepFinished();
 
         yield new StepFinishEvent(
             id: EventID::generate(),
             timestamp: time(),
         );
-    }
 
-    protected function emitStreamEndEvent(): StreamEndEvent
-    {
-        return new StreamEndEvent(
+        yield new StreamEndEvent(
             id: EventID::generate(),
             timestamp: time(),
-            finishReason: $this->state->finishReason() ?? FinishReason::Stop,
+            finishReason: $result->finishReason ?? FinishReason::Stop,
             usage: $this->state->usage(),
-            citations: $this->state->citations() !== [] ? $this->state->citations() : null,
-            additionalContent: $this->additionalStreamEndContent(),
+            citations: $this->citations !== [] ? $this->citations : null,
+            additionalContent: $result->additionalContent,
         );
     }
 
-    // ──────────────────────────────────────────────────────────
-    //  Shared utilities
-    // ──────────────────────────────────────────────────────────
-
     /**
-     * Read a single line from the stream (byte-by-byte until newline).
+     * @return Generator<StreamEvent>
      */
-    protected function readLine(StreamInterface $stream): string
+    protected function handleToolCalls(StreamParser $provider, Request $request, TurnResult $result, int $depth): Generator
     {
-        $buffer = '';
+        $toolCalls = $this->toolCalls;
+        $text = $this->state->currentText();
+        $messageId = $this->state->messageId();
 
-        while (! $stream->eof()) {
-            $byte = $stream->read(1);
+        $toolResults = [];
+        $hasPendingToolCalls = false;
 
-            if ($byte === '') {
-                return $buffer;
-            }
-
-            $buffer .= $byte;
-
-            if ($byte === "\n") {
-                break;
-            }
+        foreach ($this->callToolsAndYieldEvents($request->tools(), $toolCalls, $messageId, $toolResults, $hasPendingToolCalls) as $event) {
+            yield $event;
         }
 
-        return $buffer;
+        if ($hasPendingToolCalls) {
+            $this->state->markStepFinished();
+            yield new StepFinishEvent(
+                id: EventID::generate(),
+                timestamp: time(),
+            );
+
+            yield new StreamEndEvent(
+                id: EventID::generate(),
+                timestamp: time(),
+                finishReason: FinishReason::ToolCalls,
+                usage: $this->state->usage(),
+                citations: $this->citations !== [] ? $this->citations : null,
+            );
+
+            return;
+        }
+
+        yield new StepFinishEvent(
+            id: EventID::generate(),
+            timestamp: time(),
+        );
+
+        $request->addMessage(new AssistantMessage(
+            content: $text,
+            toolCalls: $toolCalls,
+            additionalContent: $result->toolCallAdditionalContent,
+        ));
+        $request->addMessage(new ToolResultMessage($toolResults));
+        $request->resetToolChoice();
+
+        $depth++;
+
+        if ($depth < $request->maxSteps()) {
+            $this->resetStateForNextTurn();
+
+            foreach ($this->processTurn($provider, $request, $depth) as $event) {
+                yield $event;
+            }
+        } else {
+            yield new StreamEndEvent(
+                id: EventID::generate(),
+                timestamp: time(),
+                finishReason: $result->finishReason ?? FinishReason::Stop,
+                usage: $this->state->usage(),
+                citations: $this->citations !== [] ? $this->citations : null,
+                additionalContent: $result->additionalContent,
+            );
+        }
     }
 
-    /**
-     * Parse a standard SSE data line (data: {...}).
-     *
-     * @return array<string, mixed>|null
-     *
-     * @throws PrismStreamDecodeException
-     */
-    protected function parseSSEDataLine(StreamInterface $stream): ?array
+    protected function resetStateForNextTurn(): void
     {
-        $line = $this->readLine($stream);
+        $this->state->reset();
+        $this->state->withMessageId(EventID::generate());
+        $this->toolCalls = [];
+        $this->citations = [];
+    }
 
-        if (! str_starts_with($line, 'data:')) {
-            return null;
-        }
-
-        $line = trim(substr($line, strlen('data:')));
-
-        if ($line === '' || $line === '[DONE]' || Str::contains($line, '[DONE]')) {
-            return null;
-        }
-
-        try {
-            return json_decode($line, true, flags: JSON_THROW_ON_ERROR);
-        } catch (Throwable $e) {
-            throw new PrismStreamDecodeException($this->providerName(), $e);
+    protected function captureMessageId(string $messageId): void
+    {
+        if ($this->state->messageId() === '') {
+            $this->state->withMessageId($messageId);
         }
     }
 }

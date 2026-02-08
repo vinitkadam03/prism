@@ -17,6 +17,7 @@ use Prism\Prism\Providers\Ollama\Handlers\Stream;
 use Prism\Prism\Providers\Ollama\Handlers\Structured;
 use Prism\Prism\Providers\Ollama\Handlers\Text;
 use Prism\Prism\Providers\Provider;
+use Prism\Prism\Providers\StreamHandler;
 use Prism\Prism\Structured\Request as StructuredRequest;
 use Prism\Prism\Structured\Response as StructuredResponse;
 use Prism\Prism\Text\Request as TextRequest;
@@ -67,12 +68,12 @@ class Ollama extends Provider
     #[\Override]
     public function stream(TextRequest $request): Generator
     {
-        $handler = new Stream($this->client(
+        $provider = new Stream($this->client(
             $request->clientOptions(),
             $request->clientRetry()
         ));
 
-        return $handler->handle($request);
+        return (new StreamHandler)->handle($provider, $request);
     }
 
     #[\Override]
