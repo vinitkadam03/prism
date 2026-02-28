@@ -21,6 +21,7 @@ use Prism\Prism\Streaming\Events\TextStartEvent;
 use Prism\Prism\Streaming\Events\ThinkingCompleteEvent;
 use Prism\Prism\Streaming\Events\ThinkingEvent;
 use Prism\Prism\Streaming\Events\ThinkingStartEvent;
+use Prism\Prism\Streaming\Events\ToolApprovalRequestEvent;
 use Prism\Prism\Streaming\Events\ToolCallEvent;
 use Prism\Prism\Streaming\Events\ToolResultEvent;
 use Prism\Prism\Text\PendingRequest;
@@ -136,6 +137,7 @@ class DataProtocolAdapter
             ThinkingEvent::class => $this->handleThinkingDelta($event),
             ThinkingCompleteEvent::class => $this->handleThinkingComplete($event),
             ToolCallEvent::class => $this->handleToolCall($event),
+            ToolApprovalRequestEvent::class => $this->handleToolApprovalRequest($event),
             ToolResultEvent::class => $this->handleToolResult($event),
             ArtifactEvent::class => $this->handleArtifact($event),
             ProviderToolEvent::class => $this->handleProviderTool($event),
@@ -253,14 +255,31 @@ class DataProtocolAdapter
     }
 
     /**
+     * @return array<string, mixed>
+     */
+    protected function handleToolApprovalRequest(ToolApprovalRequestEvent $event): array
+    {
+        $this->startedToolCallIds[$event->toolCall->id] = true;
+
+        return [
+            'type' => 'tool-approval-request',
+            'toolCallId' => $event->toolCall->id,
+            'toolName' => $event->toolCall->name,
+            'input' => $event->toolCall->arguments(),
+            'messageId' => $event->messageId,
+        ];
+    }
+
+    /**
      * @return array<string, mixed>|null
      */
     protected function handleToolResult(ToolResultEvent $event): ?array
     {
         $toolCallId = $event->toolResult->toolCallId;
 
+        // Allow tool results for tools announced in a previous stream (e.g. approval flow Phase 2)
         if (! isset($this->startedToolCallIds[$toolCallId])) {
-            return null;
+            $this->startedToolCallIds[$toolCallId] = true;
         }
 
         return [
