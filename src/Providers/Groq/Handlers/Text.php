@@ -40,6 +40,8 @@ class Text
 
     public function handle(Request $request): TextResponse
     {
+        $this->resolveToolApprovals($request);
+
         $response = $this->sendRequest($request);
 
         $this->validateResponse($response);

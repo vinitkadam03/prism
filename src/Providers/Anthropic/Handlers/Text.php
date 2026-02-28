@@ -48,6 +48,8 @@ class Text
 
     public function handle(): Response
     {
+        $this->resolveToolApprovals($this->request);
+
         $this->sendRequest();
 
         $this->prepareTempResponse();

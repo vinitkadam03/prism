@@ -61,6 +61,9 @@ class Stream
      */
     public function handle(Request $request): Generator
     {
+        $approvalResults = [];
+        yield from $this->resolveToolApprovalsAndYieldEvents($request, EventID::generate(), $approvalResults);
+
         $response = $this->sendRequest($request);
 
         yield from $this->processStream($response, $request);
