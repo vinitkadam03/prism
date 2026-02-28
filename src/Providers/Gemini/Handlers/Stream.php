@@ -58,8 +58,7 @@ class Stream
      */
     public function handle(Request $request): Generator
     {
-        $approvalResults = [];
-        yield from $this->resolveToolApprovalsAndYieldEvents($request, EventID::generate(), $approvalResults);
+        yield from $this->resolveToolApprovalsAndYieldEvents($request, EventID::generate());
 
         $this->state->reset();
         $this->currentThoughtSignature = null;

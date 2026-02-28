@@ -287,23 +287,18 @@ trait CallsTools
      * Scans request messages for a ToolApprovalResponseMessage. If found, executes
      * approved tools, creates denial results for denied/missing tools, and replaces
      * the ToolApprovalResponseMessage with a ToolResultMessage in the request.
-     *
      */
-    protected function resolveToolApprovals(\Prism\Prism\Structured\Request|\Prism\Prism\Text\Request $request): array
+    protected function resolveToolApprovals(\Prism\Prism\Structured\Request|\Prism\Prism\Text\Request $request): void
     {
-        $toolResults = [];
-
-        foreach ($this->resolveToolApprovalsAndYieldEvents($request, EventID::generate(), $toolResults) as $event) {
+        foreach ($this->resolveToolApprovalsAndYieldEvents($request, EventID::generate()) as $event) {
             // Events are discarded for non-streaming handlers
         }
-
-        return $toolResults;
     }
 
     /**
      * Resolve pending tool approvals and yield events (streaming variant).
      */
-    protected function resolveToolApprovalsAndYieldEvents(\Prism\Prism\Structured\Request|\Prism\Prism\Text\Request $request, string $messageId, array &$toolResults): Generator
+    protected function resolveToolApprovalsAndYieldEvents(\Prism\Prism\Structured\Request|\Prism\Prism\Text\Request $request, string $messageId): Generator
     {
         $messages = $request->messages();
 
@@ -334,6 +329,8 @@ trait CallsTools
         if ($assistantMessage === null) {
             return;
         }
+
+        $toolResults = [];
 
         foreach ($assistantMessage->toolCalls as $toolCall) {
             $approval = $approvalMessage->findByToolCallId($toolCall->id);

@@ -11,6 +11,7 @@ use Prism\Prism\Text\Request;
 use Prism\Prism\Tool;
 use Prism\Prism\ValueObjects\Messages\AssistantMessage;
 use Prism\Prism\ValueObjects\Messages\ToolApprovalResponseMessage;
+use Prism\Prism\ValueObjects\Messages\ToolResultMessage;
 use Prism\Prism\ValueObjects\Messages\UserMessage;
 use Prism\Prism\ValueObjects\ToolApprovalResponse;
 use Prism\Prism\ValueObjects\ToolCall;
@@ -30,15 +31,26 @@ class ToolApprovalTestHandler
         return $this->callToolsAndYieldEvents($tools, $toolCalls, $messageId, $toolResults, $hasPendingToolCalls);
     }
 
-    public function resolve(Request $request): array
+    public function resolve(Request $request): void
     {
-        return $this->resolveToolApprovals($request);
+        $this->resolveToolApprovals($request);
     }
 
-    public function resolveStream(Request $request, string $messageId, array &$toolResults): Generator
+    public function resolveStream(Request $request, string $messageId): Generator
     {
-        return $this->resolveToolApprovalsAndYieldEvents($request, $messageId, $toolResults);
+        return $this->resolveToolApprovalsAndYieldEvents($request, $messageId);
     }
+}
+
+function getResolvedToolResults(Request $request): array
+{
+    foreach (array_reverse($request->messages()) as $message) {
+        if ($message instanceof ToolResultMessage) {
+            return $message->toolResults;
+        }
+    }
+
+    return [];
 }
 
 function createTextRequest(array $messages = [], array $tools = []): Request
@@ -240,9 +252,9 @@ describe('Phase 2: resolveToolApprovals', function (): void {
         );
 
         $handler = new ToolApprovalTestHandler;
-        $results = $handler->resolve($request);
+        $handler->resolve($request);
 
-        expect($results)->toBeEmpty();
+        expect(getResolvedToolResults($request))->toBeEmpty();
     });
 
     it('executes approved tools', function (): void {
@@ -274,8 +286,9 @@ describe('Phase 2: resolveToolApprovals', function (): void {
         );
 
         $handler = new ToolApprovalTestHandler;
-        $results = $handler->resolve($request);
+        $handler->resolve($request);
 
+        $results = getResolvedToolResults($request);
         expect($results)->toHaveCount(1)
             ->and($results[0]->toolName)->toBe('delete_file')
             ->and($results[0]->result)->toBe('Deleted: /tmp/test.txt')
@@ -283,7 +296,7 @@ describe('Phase 2: resolveToolApprovals', function (): void {
 
         $messages = $request->messages();
         $lastMessage = end($messages);
-        expect($lastMessage)->toBeInstanceOf(\Prism\Prism\ValueObjects\Messages\ToolResultMessage::class);
+        expect($lastMessage)->toBeInstanceOf(ToolResultMessage::class);
     });
 
     it('creates denial result for denied tools', function (): void {
@@ -316,8 +329,9 @@ describe('Phase 2: resolveToolApprovals', function (): void {
         );
 
         $handler = new ToolApprovalTestHandler;
-        $results = $handler->resolve($request);
+        $handler->resolve($request);
 
+        $results = getResolvedToolResults($request);
         expect($results)->toHaveCount(1)
             ->and($results[0]->toolName)->toBe('delete_file')
             ->and($results[0]->result)->toBe('Too dangerous')
@@ -347,8 +361,9 @@ describe('Phase 2: resolveToolApprovals', function (): void {
         );
 
         $handler = new ToolApprovalTestHandler;
-        $results = $handler->resolve($request);
+        $handler->resolve($request);
 
+        $results = getResolvedToolResults($request);
         expect($results)->toHaveCount(1)
             ->and($results[0]->result)->toBe('User denied tool execution');
     });
@@ -390,7 +405,7 @@ describe('Phase 2: resolveToolApprovals', function (): void {
             if ($message instanceof ToolApprovalResponseMessage) {
                 $hasApprovalMessage = true;
             }
-            if ($message instanceof \Prism\Prism\ValueObjects\Messages\ToolResultMessage) {
+            if ($message instanceof ToolResultMessage) {
                 $hasToolResultMessage = true;
             }
         }
@@ -426,11 +441,14 @@ describe('Phase 2: resolveToolApprovals', function (): void {
         );
 
         $handler = new ToolApprovalTestHandler;
-        $toolResults = [];
         $events = [];
+        $toolResults = [];
 
-        foreach ($handler->resolveStream($request, 'msg-456', $toolResults) as $event) {
+        foreach ($handler->resolveStream($request, 'msg-456') as $event) {
             $events[] = $event;
+            if ($event instanceof ToolResultEvent) {
+                $toolResults[] = $event->toolResult;
+            }
         }
 
         expect($events)->toHaveCount(2)
@@ -472,8 +490,9 @@ describe('Phase 2: resolveToolApprovals', function (): void {
         );
 
         $handler = new ToolApprovalTestHandler;
-        $results = $handler->resolve($request);
+        $handler->resolve($request);
 
+        $results = getResolvedToolResults($request);
         expect($results)->toHaveCount(1)
             ->and($results[0]->result)->toBe('User denied tool execution');
     });
