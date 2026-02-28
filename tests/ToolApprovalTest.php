@@ -3,7 +3,7 @@
 declare(strict_types=1);
 
 use Prism\Prism\Concerns\CallsTools;
-use Prism\Prism\Contracts\Message;
+use Prism\Prism\Enums\StreamEventType;
 use Prism\Prism\Enums\ToolChoice;
 use Prism\Prism\Streaming\Events\ToolApprovalRequestEvent;
 use Prism\Prism\Streaming\Events\ToolResultEvent;
@@ -15,7 +15,6 @@ use Prism\Prism\ValueObjects\Messages\ToolResultMessage;
 use Prism\Prism\ValueObjects\Messages\UserMessage;
 use Prism\Prism\ValueObjects\ToolApprovalResponse;
 use Prism\Prism\ValueObjects\ToolCall;
-use Prism\Prism\ValueObjects\ToolResult;
 
 class ToolApprovalTestHandler
 {
@@ -555,7 +554,7 @@ describe('ToolApprovalRequestEvent', function (): void {
             messageId: 'msg-1',
         );
 
-        expect($event->type())->toBe(\Prism\Prism\Enums\StreamEventType::ToolApprovalRequest);
+        expect($event->type())->toBe(StreamEventType::ToolApprovalRequest);
 
         $array = $event->toArray();
         expect($array['tool_name'])->toBe('test_tool')

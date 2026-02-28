@@ -23,6 +23,7 @@ use Prism\Prism\Tool;
 use Prism\Prism\ValueObjects\Messages\AssistantMessage;
 use Prism\Prism\ValueObjects\Messages\ToolApprovalResponseMessage;
 use Prism\Prism\ValueObjects\Messages\ToolResultMessage;
+use Prism\Prism\ValueObjects\ToolApprovalResponse;
 use Prism\Prism\ValueObjects\ToolCall;
 use Prism\Prism\ValueObjects\ToolOutput;
 use Prism\Prism\ValueObjects\ToolResult;
@@ -288,7 +289,7 @@ trait CallsTools
      * approved tools, creates denial results for denied/missing tools, and replaces
      * the ToolApprovalResponseMessage with a ToolResultMessage in the request.
      */
-    protected function resolveToolApprovals(\Prism\Prism\Structured\Request|\Prism\Prism\Text\Request $request): void
+    protected function resolveToolApprovals(Request|\Prism\Prism\Text\Request $request): void
     {
         foreach ($this->resolveToolApprovalsAndYieldEvents($request, EventID::generate()) as $event) {
             // Events are discarded for non-streaming handlers
@@ -298,7 +299,7 @@ trait CallsTools
     /**
      * Resolve pending tool approvals and yield events (streaming variant).
      */
-    protected function resolveToolApprovalsAndYieldEvents(\Prism\Prism\Structured\Request|\Prism\Prism\Text\Request $request, string $messageId): Generator
+    protected function resolveToolApprovalsAndYieldEvents(Request|\Prism\Prism\Text\Request $request, string $messageId): Generator
     {
         $messages = $request->messages();
 
@@ -312,7 +313,7 @@ trait CallsTools
             }
         }
 
-        if ($approvalMessage === null) {
+        if (! $approvalMessage instanceof ToolApprovalResponseMessage) {
             return;
         }
 
@@ -326,7 +327,7 @@ trait CallsTools
             }
         }
 
-        if ($assistantMessage === null) {
+        if (! $assistantMessage instanceof AssistantMessage) {
             return;
         }
 
@@ -335,7 +336,7 @@ trait CallsTools
         foreach ($assistantMessage->toolCalls as $toolCall) {
             $approval = $approvalMessage->findByToolCallId($toolCall->id);
 
-            if ($approval !== null && $approval->approved) {
+            if ($approval instanceof ToolApprovalResponse && $approval->approved) {
                 $result = $this->executeToolCall($request->tools(), $toolCall, $messageId);
 
                 $toolResults[] = $result['toolResult'];
