@@ -10,6 +10,7 @@ use Illuminate\Http\Client\Response;
 use Illuminate\Support\Arr;
 use Prism\Prism\Concerns\CallsTools;
 use Prism\Prism\Enums\FinishReason;
+use Prism\Prism\Exceptions\PrismException;
 use Prism\Prism\Exceptions\PrismStreamDecodeException;
 use Prism\Prism\Providers\Anthropic\Maps\CitationsMapper;
 use Prism\Prism\Providers\Anthropic\ValueObjects\AnthropicStreamState;
@@ -74,7 +75,7 @@ class Stream
                 continue;
             }
 
-            $streamEvent = $this->processEvent($event);
+            $streamEvent = $this->processEvent($event, $request);
 
             if ($streamEvent instanceof Generator) {
                 foreach ($streamEvent as $event) {
@@ -106,10 +107,10 @@ class Stream
      * @param  array<string, mixed>  $event
      * @return StreamEvent|Generator<StreamEvent>|null
      */
-    protected function processEvent(array $event): StreamEvent|Generator|null
+    protected function processEvent(array $event, Request $request): StreamEvent|Generator|null
     {
         return match ($event['type'] ?? null) {
-            'message_start' => $this->handleMessageStart($event),
+            'message_start' => $this->handleMessageStart($event, $request),
             'content_block_start' => $this->handleContentBlockStart($event),
             'content_block_delta' => $this->handleContentBlockDelta($event),
             'content_block_stop' => $this->handleContentBlockStop($event),
@@ -125,7 +126,7 @@ class Stream
      * @param  array<string, mixed>  $event
      * @return Generator<StreamEvent>
      */
-    protected function handleMessageStart(array $event): Generator
+    protected function handleMessageStart(array $event, Request $request): Generator
     {
         $message = $event['message'] ?? [];
         $this->state->withMessageId($message['id'] ?? EventID::generate());
@@ -157,7 +158,8 @@ class Stream
 
             yield new StepStartEvent(
                 id: EventID::generate(),
-                timestamp: time()
+                timestamp: time(),
+                request: $request
             );
         }
     }
@@ -474,6 +476,8 @@ class Stream
 
     /**
      * @return Generator<StreamEvent>
+     *
+     * @throws PrismException
      */
     protected function handleToolCalls(Request $request, int $depth): Generator
     {

@@ -107,7 +107,8 @@ class Stream
 
                 yield new StepStartEvent(
                     id: EventID::generate(),
-                    timestamp: time()
+                    timestamp: time(),
+                    request: $request
                 );
             }
 
